@@ -1,0 +1,26 @@
+# --- Real data must never be committed -------------------------------------
+# Ignore every CSV anywhere in the repo (stricter than "root only"), and any
+# data/ directory. Card-processor exports contain real customer financials.
+*.csv
+*.CSV
+*.xlsx
+*.xls
+data/
+**/data/
+
+# ...except the synthetic, fake-name fixtures that ship with the project.
+!sample-data/
+!sample-data/sample_transactions.csv
+!tests/fixtures/
+!tests/fixtures/*.csv
+
+# --- Local tooling -------------------------------------------------------------
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+tests/output/

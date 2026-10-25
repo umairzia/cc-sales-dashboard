@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- build:csp -->
+<title>Card Sales Dashboard</title>
+<meta name="description" content="Offline credit card sales dashboard. Drop a transaction export CSV to analyse it locally in your browser.">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app" data-state="empty">
+
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M2 9.5h20"/><path d="M6 15h4"/></svg>
+      <div>
+        <h1>Card Sales Dashboard</h1>
+        <p class="brand-sub">Card processor exports, analysed offline</p>
+      </div>
+    </div>
+    <div class="file-meta" id="fileMeta" hidden>
+      <dl>
+        <div><dt>File</dt><dd id="metaFile"></dd></div>
+        <div><dt>Data range</dt><dd id="metaRange"></dd></div>
+        <div><dt>Rows</dt><dd id="metaRows"></dd></div>
+        <div><dt>Currency</dt><dd id="metaCurrency"></dd></div>
+      </dl>
+      <button type="button" class="btn" id="loadAnother">Load another file</button>
+    </div>
+  </header>
+
+  <!-- Empty / error state ---------------------------------------------------->
+  <section class="intro" id="intro">
+    <div class="error-card" id="errorCard" role="alert" hidden>
+      <h2>That file couldn’t be read</h2>
+      <p class="error-msg" id="errorMsg"></p>
+      <p class="error-detail" id="errorDetail"></p>
+      <p class="error-hint">Nothing was changed. Check the format below, then drop the file again.</p>
+    </div>
+
+    <label class="dropzone" id="dropzone" for="fileInput" tabindex="0">
+      <input type="file" id="fileInput" accept=".csv,text/csv,text/plain">
+      <svg viewBox="0 0 24 24" class="drop-icon" aria-hidden="true"><path d="M12 15V4"/><path d="m7.5 8.5 4.5-4.5 4.5 4.5"/><path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"/></svg>
+      <span class="drop-title">Drop a transaction export here</span>
+      <span class="drop-sub">or <span class="link">click to browse</span> for a <code>.csv</code> file</span>
+    </label>
+
+    <div class="intro-grid">
+      <div class="intro-card">
+        <h3>Expected format</h3>
+        <p>A Global Payments / Realcontrol transaction export. Extra columns are ignored; these are used (names matched case-insensitively):</p>
+        <table class="format-table">
+          <thead><tr><th>Column</th><th>Used as</th></tr></thead>
+          <tbody>
+            <tr><td><code>Date &amp; Time</code></td><td>Date, <strong>day first</strong>: <code>DD/MM/YYYY HH:MM</code></td></tr>
+            <tr><td><code>Customer Number</code></td><td>Customer name (blank = one-time manual charge)</td></tr>
+            <tr><td><code>Amount</code></td><td>Whole <strong>cents</strong>: <code>263391</code> = $2,633.91</td></tr>
+            <tr><td><code>Card Type</code></td><td>VISA / MC / AMEX</td></tr>
+            <tr><td><code>Status</code></td><td>Batched, Failed or Voided (blank = Failed)</td></tr>
+            <tr><td><code>Currency</code></td><td>Optional, usually CAD</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="intro-card">
+        <h3>Private by design</h3>
+        <p>The file is read by this page, inside your browser. Nothing is uploaded, stored or sent anywhere. The page makes no network requests at all, so it works with Wi-Fi switched off.</p>
+        <p>Your CSV is never modified.</p>
+        <h3>What you’ll see</h3>
+        <p>Revenue trend and slowdowns, customers growing or going quiet, concentration risk, RFM segments, new vs returning customers, failed charges and retries, and a data-quality check of everything above.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Dashboard ------------------------------------------------------------------>
+  <main id="dashboard" hidden>
+
+    <div class="filters" id="filters" role="group" aria-label="Filters">
+      <div class="field">
+        <label for="preset">Period</label>
+        <select id="preset">
+          <option value="all">Full export</option>
+          <option value="3">Last 3 months</option>
+          <option value="6">Last 6 months</option>
+          <option value="12">Last 12 months</option>
+          <option value="ytd">Year to date</option>
+          <option value="custom">Custom</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="fromDate">From</label>
+        <input type="date" id="fromDate">
+      </div>
+      <div class="field">
+        <label for="toDate">To</label>
+        <input type="date" id="toDate">
+      </div>
+      <div class="field">
+        <label for="bucket">Group by</label>
+        <select id="bucket">
+          <option value="auto">Auto</option>
+          <option value="day">Day</option>
+          <option value="week">Week</option>
+          <option value="month">Month</option>
+          <option value="quarter">Quarter</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="statusFilter">Status</label>
+        <select id="statusFilter">
+          <option value="all">All attempts</option>
+          <option value="success">Successful only</option>
+        </select>
+      </div>
+      <div class="filters-spacer"></div>
+      <button type="button" class="btn" id="printBtn">Print / PDF</button>
+    </div>
+    <p class="print-summary" id="printSummary"></p>
+
+    <div class="notices" id="notices"></div>
+
+    <section class="kpis" id="kpis" aria-label="Key figures"></section>
+
+    <!-- C. Revenue over time -->
+    <section class="section" aria-labelledby="h-rev">
+      <h2 id="h-rev" class="section-title">Revenue over time</h2>
+      <div class="grid">
+        <article class="card span-2" data-chart="revenue">
+          <header class="card-head">
+            <div><h3 id="t-revenue">Revenue per period</h3><p class="card-sub" id="s-revenue"></p></div>
+          </header>
+          <div class="chart-box tall"><canvas id="c-revenue" role="img"></canvas></div>
+          <p class="caption" id="cap-revenue"></p>
+        </article>
+        <article class="card span-2" data-chart="pop">
+          <header class="card-head">
+            <div><h3 id="t-pop">Change vs previous period</h3><p class="card-sub">Percent change in revenue from one period to the next</p></div>
+          </header>
+          <div class="chart-box short"><canvas id="c-pop" role="img"></canvas></div>
+          <p class="caption" id="cap-pop"></p>
+        </article>
+      </div>
+    </section>
+
+    <!-- D. Momentum -->
+    <section class="section" aria-labelledby="h-mom">
+      <h2 id="h-mom" class="section-title">Momentum &amp; slowdown</h2>
+      <div class="grid">
+        <article class="card" data-chart="slopes">
+          <header class="card-head">
+            <div><h3>Customer trend</h3><p class="card-sub" id="s-slopes"></p></div>
+            <button type="button" class="btn small" id="slopesToggle" aria-pressed="false">Show all</button>
+          </header>
+          <div class="chart-box" id="box-slopes"><canvas id="c-slopes" role="img"></canvas></div>
+          <p class="caption" id="cap-slopes"></p>
+        </article>
+        <div class="stack">
+          <article class="card">
+            <header class="card-head">
+              <div><h3>Needs attention</h3><p class="card-sub" id="s-attention"></p></div>
+              <div class="inline-field">
+                <label for="threshold">Drop of at least</label>
+                <input type="number" id="threshold" min="5" max="95" step="5" value="25" inputmode="numeric">
+                <span>%</span>
+              </div>
+            </header>
+            <div class="table-wrap scroll mid" id="tbl-attention"></div>
+            <p class="caption" id="cap-attention"></p>
+          </article>
+          <article class="card">
+            <header class="card-head">
+              <div><h3>Gone quiet</h3><p class="card-sub" id="s-quiet"></p></div>
+            </header>
+            <div class="table-wrap scroll mid" id="tbl-quiet"></div>
+            <p class="caption" id="cap-quiet"></p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- E. Customers -->
+    <section class="section" aria-labelledby="h-cust">
+      <h2 id="h-cust" class="section-title">Customers</h2>
+      <div class="grid">
+        <article class="card" data-chart="top15">
+          <header class="card-head"><div><h3>Top 15 customers by revenue</h3><p class="card-sub">Gross revenue from successful charges</p></div></header>
+          <div class="chart-box" id="box-top15"><canvas id="c-top15" role="img"></canvas></div>
+          <p class="caption" id="cap-top15"></p>
+        </article>
+        <article class="card" data-chart="pareto">
+          <header class="card-head"><div><h3>Revenue concentration</h3><p class="card-sub">Cumulative share of revenue as customers are added, biggest first</p></div></header>
+          <div class="callout" id="concCallout"></div>
+          <div class="chart-box"><canvas id="c-pareto" role="img"></canvas></div>
+          <p class="caption" id="cap-pareto"></p>
+        </article>
+        <article class="card" data-chart="perActive">
+          <header class="card-head"><div><h3 id="t-perActive">Average revenue per active month</h3><p class="card-sub" id="s-perActive"></p></div></header>
+          <div class="chart-box" id="box-perActive"><canvas id="c-perActive" role="img"></canvas></div>
+          <p class="caption" id="cap-perActive"></p>
+        </article>
+        <article class="card" data-chart="cadence">
+          <header class="card-head">
+            <div><h3>Payment cadence</h3><p class="card-sub" id="s-cadence"></p></div>
+            <button type="button" class="btn small" id="cadenceToggle" aria-pressed="false">Show all</button>
+          </header>
+          <div class="chart-box" id="box-cadence"><canvas id="c-cadence" role="img"></canvas></div>
+          <p class="caption" id="cap-cadence"></p>
+        </article>
+        <article class="card span-2">
+          <header class="card-head"><div><h3>Overdue against their own rhythm</h3><p class="card-sub">Customers whose time since their last charge is at least twice their usual gap (and at least 7 days)</p></div></header>
+          <div class="table-wrap scroll mid" id="tbl-drifting"></div>
+        </article>
+      </div>
+    </section>
+
+    <!-- F. RFM -->
+    <section class="section" aria-labelledby="h-rfm">
+      <h2 id="h-rfm" class="section-title">Customer segments (RFM)</h2>
+      <div class="grid">
+        <article class="card" data-chart="rfmCount">
+          <header class="card-head"><div><h3>Customers per segment</h3><p class="card-sub">Click a bar to list its customers</p></div></header>
+          <div class="chart-box"><canvas id="c-rfmCount" role="img"></canvas></div>
+          <p class="caption" id="cap-rfmCount"></p>
+        </article>
+        <article class="card" data-chart="rfmRevenue">
+          <header class="card-head"><div><h3>Revenue per segment</h3><p class="card-sub">Click a bar to list its customers</p></div></header>
+          <div class="chart-box"><canvas id="c-rfmRevenue" role="img"></canvas></div>
+          <p class="caption" id="cap-rfmRevenue"></p>
+        </article>
+        <article class="card span-2">
+          <header class="card-head">
+            <div><h3 id="t-rfmTable">All segmented customers</h3><p class="card-sub">R = days since last successful charge, F = number of successful charges, M = gross revenue. Each is scored 1–4 by quartile (4 = best) and summed.</p></div>
+            <div class="chips" id="rfmChips" role="group" aria-label="Filter by segment"></div>
+          </header>
+          <div class="table-wrap scroll" id="tbl-rfm"></div>
+        </article>
+      </div>
+    </section>
+
+    <!-- G. Acquisition -->
+    <section class="section" aria-labelledby="h-acq">
+      <h2 id="h-acq" class="section-title">Acquisition</h2>
+      <div class="grid">
+        <article class="card span-2" data-chart="acq">
+          <header class="card-head"><div><h3>New vs returning customers</h3><p class="card-sub">Customers with a successful charge in each period, and the running total of unique customers</p></div></header>
+          <div class="chart-box"><canvas id="c-acq" role="img"></canvas></div>
+          <p class="caption" id="cap-acq"></p>
+        </article>
+      </div>
+    </section>
+
+    <!-- H. Risk & operations -->
+    <section class="section" aria-labelledby="h-risk">
+      <h2 id="h-risk" class="section-title">Risk &amp; operations</h2>
+      <div class="filtered-note" id="riskFilteredNote" hidden>Failed and voided charges are hidden because the status filter is set to <strong>Successful only</strong>. Card mix still shows successful charges.</div>
+      <div class="grid">
+        <article class="card" data-chart="failCust" data-needs-failures>
+          <header class="card-head"><div><h3>Failure rate by customer</h3><p class="card-sub" id="s-failCust"></p></div></header>
+          <div class="chart-box" id="box-failCust"><canvas id="c-failCust" role="img"></canvas></div>
+          <p class="caption" id="cap-failCust"></p>
+        </article>
+        <div class="stack">
+          <article class="card" data-chart="cardMix">
+            <header class="card-head"><div><h3>Card type mix</h3><p class="card-sub">Share of gross revenue by card network</p></div></header>
+            <div class="donut-row">
+              <div class="chart-box donut"><canvas id="c-cardMix" role="img"></canvas></div>
+              <div class="donut-legend" id="cardLegend"></div>
+            </div>
+            <p class="caption" id="cap-cardMix"></p>
+          </article>
+          <article class="card" data-chart="cardFail" data-needs-failures>
+            <header class="card-head"><div><h3>Failure rate by card type</h3><p class="card-sub">Failed attempts ÷ all attempts, per network</p></div></header>
+            <div class="chart-box short"><canvas id="c-cardFail" role="img"></canvas></div>
+            <p class="caption" id="cap-cardFail"></p>
+          </article>
+        </div>
+        <article class="card" data-chart="reasons" data-needs-failures>
+          <header class="card-head"><div><h3>Why charges failed</h3><p class="card-sub">Decline message recorded by the processor</p></div></header>
+          <div class="chart-box short" id="box-reasons"><canvas id="c-reasons" role="img"></canvas></div>
+          <p class="caption" id="cap-reasons"></p>
+        </article>
+        <article class="card" data-needs-failures>
+          <header class="card-head"><div><h3>Voided transactions</h3><p class="card-sub" id="s-voids"></p></div></header>
+          <div class="table-wrap scroll short" id="tbl-voids"></div>
+        </article>
+        <article class="card span-2" data-needs-failures>
+          <header class="card-head"><div><h3>Retry chains</h3><p class="card-sub">A failed charge re-attempted later for the same customer, amount and card type</p></div></header>
+          <div class="stat-grid wide" id="retryStats"></div>
+          <p class="caption" id="cap-retry"></p>
+        </article>
+      </div>
+    </section>
+
+    <!-- I. Data quality -->
+    <section class="section" aria-labelledby="h-dq">
+      <details class="dq" id="dq">
+        <summary><h2 id="h-dq" class="section-title">Data quality</h2><span class="dq-summary" id="dqSummary"></span></summary>
+        <div class="dq-body" id="dqBody"></div>
+      </details>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p><strong>Your data never leaves this browser.</strong> The CSV is read locally with the File API. Nothing is uploaded, stored or sent, and this page makes no network requests.</p>
+    <p class="footer-meta" id="footerMeta">Card Sales Dashboard · works offline · open source, MIT</p>
+  </footer>
+</div>
+
+<div class="drop-overlay" id="dropOverlay" hidden><div>Drop the CSV to analyse it</div></div>
+
+<script src="../vendor/chart.umd.min.js"></script>
+<script src="parse.js"></script>
+<script src="metrics.js"></script>
+<script src="charts.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
