@@ -349,7 +349,6 @@
       return s >= 0 ? mix(t.surface, t.goodDeep, k) : mix(t.surface, t.badDeep, k);
     };
     boxEl.style.height = Math.max(160, list.length * 21 + 70) + 'px';
-    const narrow = boxEl.clientWidth < 480;
     const per = '/' + (unitNoun === 'month' ? 'mo' : unitNoun === 'week' ? 'wk' : unitNoun === 'day' ? 'day' : 'qtr');
     return make('slopes', {
       type: 'bar',
@@ -361,15 +360,15 @@
         indexAxis: 'y',
         layout: { padding: { left: 4, right: 4 } },
         scales: {
-          x: { grace: narrow ? '75%' : '32%', grid: gridOpts(t, true), border: { display: false }, ticks: ticks(t, { callback: (v) => Fmt.signedMoney(v), maxTicksLimit: narrow ? 4 : 7, maxRotation: 0 }), title: axisTitle('Revenue change per ' + unitNoun + ' (linear trend)', t), position: 'top' },
-          y: { grid: { display: false }, border: { display: false }, ticks: ticks(t, { autoSkip: false, callback: function (v) { return nameTick(narrow ? 15 : 26)(this.getLabelForValue(v)); }, font: { size: 11.5 } }) },
+          x: { grace: '32%', grid: gridOpts(t, true), border: { display: false }, ticks: ticks(t, { callback: (v) => Fmt.signedMoney(v), maxTicksLimit: 7, maxRotation: 0 }), title: axisTitle('Revenue change per ' + unitNoun + ' (linear trend)', t), position: 'top' },
+          y: { grid: { display: false }, border: { display: false }, ticks: ticks(t, { autoSkip: false, callback: function (v) { return nameTick(26)(this.getLabelForValue(v)); }, font: { size: 11.5 } }) },
         },
         plugins: {
           legend: { display: false },
           tooltip: { callbacks: {
             label: (ctx) => { const x = list[ctx.dataIndex]; return [' Trend: ' + Fmt.signedMoney(x.slope) + per, ' Active in ' + x.active + ' of ' + x.buckets + ' ' + unitNoun + 's', ' Revenue: ' + Fmt.money(x.gross / 100)]; },
           } },
-          valueLabels: { color: t.text2, weight: '500', format: (v) => (v >= 0 ? '▲ +' : '▼ ' + MINUS) + Fmt.compact(Math.abs(v)) + (narrow ? '' : per) },
+          valueLabels: { color: t.text2, weight: '500', format: (v) => (v >= 0 ? '▲ +' : '▼ ' + MINUS) + Fmt.compact(Math.abs(v)) + per },
         },
       },
     }, 'Diverging bar chart of each customer’s revenue trend');
@@ -380,7 +379,6 @@
   // ---------------------------------------------------------------------------
   function hbar(id, items, t, o) {
     o.box.style.height = Math.max(150, items.length * (o.rowH || 22) + 60) + 'px';
-    const narrow = o.box.clientWidth < 480;
     return make(id, {
       type: 'bar',
       data: {
@@ -394,8 +392,8 @@
       options: {
         indexAxis: 'y',
         scales: {
-          x: { beginAtZero: true, grace: narrow ? '55%' : o.grace || '28%', max: o.max, grid: gridOpts(t), border: { display: false }, ticks: ticks(t, { callback: o.tick, maxTicksLimit: narrow ? 4 : 6, maxRotation: 0 }), title: axisTitle(o.axis, t) },
-          y: { grid: { display: false }, border: { color: t.axis }, ticks: ticks(t, { autoSkip: false, callback: function (v) { return nameTick(narrow ? 16 : 28)(this.getLabelForValue(v)); }, font: { size: 11.5 } }) },
+          x: { beginAtZero: true, grace: o.grace || '28%', max: o.max, grid: gridOpts(t), border: { display: false }, ticks: ticks(t, { callback: o.tick, maxTicksLimit: 6, maxRotation: 0 }), title: axisTitle(o.axis, t) },
+          y: { grid: { display: false }, border: { color: t.axis }, ticks: ticks(t, { autoSkip: false, callback: function (v) { return nameTick(28)(this.getLabelForValue(v)); }, font: { size: 11.5 } }) },
         },
         plugins: {
           legend: { display: false },
@@ -442,7 +440,6 @@
     const cstep = maxGap * 3 <= 42 ? 7 : maxGap * 3 <= 98 ? 14 : 28;
     const cap = Math.max(28, Math.ceil((maxGap * 3) / cstep) * cstep);
     const off = (x) => x.since > cap;
-    const narrow = boxEl.clientWidth < 480;
     return make('cadence', {
       type: 'bar',
       data: {
@@ -458,8 +455,8 @@
         indexAxis: 'y',
         interaction: { mode: 'index', intersect: false, axis: 'y' },
         scales: {
-          x: { beginAtZero: true, max: cap, grid: gridOpts(t), border: { display: false }, ticks: ticks(t, { stepSize: narrow ? cstep * 2 : cstep, maxRotation: 0, callback: (v) => v + (v === cap ? '+' : '') }), title: axisTitle('Days', t), position: 'top' },
-          y: { grid: { display: false }, border: { color: t.axis }, ticks: ticks(t, { autoSkip: false, callback: function (v) { return nameTick(narrow ? 16 : 26)(this.getLabelForValue(v)); }, font: { size: 11.5 } }) },
+          x: { beginAtZero: true, max: cap, grid: gridOpts(t), border: { display: false }, ticks: ticks(t, { stepSize: cstep, maxRotation: 0, callback: (v) => v + (v === cap ? '+' : '') }), title: axisTitle('Days', t), position: 'top' },
+          y: { grid: { display: false }, border: { color: t.axis }, ticks: ticks(t, { autoSkip: false, callback: function (v) { return nameTick(26)(this.getLabelForValue(v)); }, font: { size: 11.5 } }) },
         },
         plugins: {
           legend: { labels: { usePointStyle: true } },

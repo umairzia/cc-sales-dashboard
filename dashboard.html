@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=1280">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Card Sales Dashboard</title>
 <meta name="description" content="Offline credit card sales dashboard. Drop a transaction export CSV to analyse it locally in your browser.">
@@ -111,7 +111,9 @@ code { font-family: var(--mono); font-size: 0.92em; background: var(--surface-2)
 button, input, select { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-#app { max-width: 1440px; margin: 0 auto; padding: 0 24px 24px; }
+/* Desktop only: the layout never collapses. Below ~1240px wide the page
+ * scrolls sideways instead; wide monitors get more room for the charts. */
+#app { min-width: 1240px; max-width: 1760px; margin: 0 auto; padding: 0 32px 32px; }
 
 /* --- Top bar ----------------------------------------------------------------- */
 .topbar {
@@ -217,6 +219,7 @@ button, input, select { font: inherit; color: inherit; }
 .section-title::before { content: ""; width: 4px; height: 18px; border-radius: 2px; background: var(--accent); }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap); align-items: start; }
 .span-2 { grid-column: 1 / -1; }
+.grid > .card.fill { align-self: stretch; }
 .stack { display: grid; gap: var(--gap); min-width: 0; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px 12px; min-width: 0; }
 .card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
@@ -278,7 +281,6 @@ table.data tbody tr:hover { background: var(--surface-2); }
 
 .stat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; }
 .stat-grid.wide { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-@media (max-width: 700px) { .stat-grid.wide { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .stat .k { font-size: 12px; color: var(--text-2); }
 .stat .v { font-size: 20px; font-weight: 650; }
 .stat .s { font-size: 12px; color: var(--muted); }
@@ -306,20 +308,16 @@ table.data tbody tr:hover { background: var(--surface-2); }
 .footer::before { content: "🔒"; display: none; }
 .footer-meta { color: var(--muted); }
 
-/* --- Responsive ---------------------------------------------------------------------------------- */
-@media (max-width: 1100px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 900px) {
-  #app { padding: 0 16px 16px; }
-  .grid, .intro-grid { grid-template-columns: minmax(0, 1fr); }
-  .span-2 { grid-column: auto; }
-  .chart-box.tall { height: 340px; }
-  .donut-row { grid-template-columns: minmax(0, 1fr); }
-}
-@media (max-width: 520px) {
-  .kpis { grid-template-columns: minmax(0, 1fr); }
-  .filters { position: static; }
-  .field { flex: 1 1 140px; }
-  .file-meta dd { max-width: 200px; }
+/* --- Wide desktop monitors ------------------------------------------------------------------------ */
+@media (min-width: 1700px) {
+  body:not(.printing) .kpis { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+  body:not(.printing) .kpi { padding: 12px 14px 10px; }
+  body:not(.printing) .kpi-value, body:not(.printing) .kpi.hero .kpi-value { font-size: 24px; }
+  body:not(.printing) .kpi-sub { white-space: normal; min-height: 2.9em; line-height: 1.45; }
+  body:not(.printing) .chart-box { height: 320px; }
+  body:not(.printing) .chart-box.tall { height: 460px; }
+  body:not(.printing) .chart-box.short { height: 240px; }
+  body:not(.printing) .chart-box.donut { height: 250px; }
 }
 
 /* --- Print ----------------------------------------------------------------------------------------
@@ -329,7 +327,7 @@ table.data tbody tr:hover { background: var(--surface-2); }
   @page { size: A4 portrait; margin: 12mm; }
   :root { --bg: #ffffff; --surface: #ffffff; }
   body { background: #fff; font-size: 11px; }
-  #app { max-width: none; padding: 0; }
+  #app { min-width: 0; max-width: none; padding: 0; }
   .topbar { padding-top: 0; }
   .btn, .filters, .intro, .drop-overlay, #slopesToggle, #cadenceToggle, .chips, .inline-field input { display: none !important; }
   .print-summary { display: block; color: var(--text-2); margin: 0 0 10px; font-size: 11px; }
@@ -357,7 +355,7 @@ table.data tbody tr:hover { background: var(--surface-2); }
   .dq .table-wrap tbody tr:nth-child(n+16) { display: table-row; }
   .footer { break-inside: avoid; }
 }
-body.printing #app { max-width: 700px; }
+body.printing #app { min-width: 0; max-width: 700px; padding: 0 24px; }
 @media screen { .print-img { display: none; } }
 body.printing .grid { grid-template-columns: minmax(0, 1fr); }
 body.printing .span-2 { grid-column: auto; }
@@ -501,7 +499,7 @@ body.printing .span-2 { grid-column: auto; }
     <section class="section" aria-labelledby="h-mom">
       <h2 id="h-mom" class="section-title">Momentum &amp; slowdown</h2>
       <div class="grid">
-        <article class="card" data-chart="slopes">
+        <article class="card fill" data-chart="slopes">
           <header class="card-head">
             <div><h3>Customer trend</h3><p class="card-sub" id="s-slopes"></p></div>
             <button type="button" class="btn small" id="slopesToggle" aria-pressed="false">Show all</button>
@@ -1799,7 +1797,6 @@ body.printing .span-2 { grid-column: auto; }
       return s >= 0 ? mix(t.surface, t.goodDeep, k) : mix(t.surface, t.badDeep, k);
     };
     boxEl.style.height = Math.max(160, list.length * 21 + 70) + 'px';
-    const narrow = boxEl.clientWidth < 480;
     const per = '/' + (unitNoun === 'month' ? 'mo' : unitNoun === 'week' ? 'wk' : unitNoun === 'day' ? 'day' : 'qtr');
     return make('slopes', {
       type: 'bar',
@@ -1811,15 +1808,15 @@ body.printing .span-2 { grid-column: auto; }
         indexAxis: 'y',
         layout: { padding: { left: 4, right: 4 } },
         scales: {
-          x: { grace: narrow ? '75%' : '32%', grid: gridOpts(t, true), border: { display: false }, ticks: ticks(t, { callback: (v) => Fmt.signedMoney(v), maxTicksLimit: narrow ? 4 : 7, maxRotation: 0 }), title: axisTitle('Revenue change per ' + unitNoun + ' (linear trend)', t), position: 'top' },
-          y: { grid: { display: false }, border: { display: false }, ticks: ticks(t, { autoSkip: false, callback: function (v) { return nameTick(narrow ? 15 : 26)(this.getLabelForValue(v)); }, font: { size: 11.5 } }) },
+          x: { grace: '32%', grid: gridOpts(t, true), border: { display: false }, ticks: ticks(t, { callback: (v) => Fmt.signedMoney(v), maxTicksLimit: 7, maxRotation: 0 }), title: axisTitle('Revenue change per ' + unitNoun + ' (linear trend)', t), position: 'top' },
+          y: { grid: { display: false }, border: { display: false }, ticks: ticks(t, { autoSkip: false, callback: function (v) { return nameTick(26)(this.getLabelForValue(v)); }, font: { size: 11.5 } }) },
         },
         plugins: {
           legend: { display: false },
           tooltip: { callbacks: {
             label: (ctx) => { const x = list[ctx.dataIndex]; return [' Trend: ' + Fmt.signedMoney(x.slope) + per, ' Active in ' + x.active + ' of ' + x.buckets + ' ' + unitNoun + 's', ' Revenue: ' + Fmt.money(x.gross / 100)]; },
           } },
-          valueLabels: { color: t.text2, weight: '500', format: (v) => (v >= 0 ? '▲ +' : '▼ ' + MINUS) + Fmt.compact(Math.abs(v)) + (narrow ? '' : per) },
+          valueLabels: { color: t.text2, weight: '500', format: (v) => (v >= 0 ? '▲ +' : '▼ ' + MINUS) + Fmt.compact(Math.abs(v)) + per },
         },
       },
     }, 'Diverging bar chart of each customer’s revenue trend');
@@ -1830,7 +1827,6 @@ body.printing .span-2 { grid-column: auto; }
   // ---------------------------------------------------------------------------
   function hbar(id, items, t, o) {
     o.box.style.height = Math.max(150, items.length * (o.rowH || 22) + 60) + 'px';
-    const narrow = o.box.clientWidth < 480;
     return make(id, {
       type: 'bar',
       data: {
@@ -1844,8 +1840,8 @@ body.printing .span-2 { grid-column: auto; }
       options: {
         indexAxis: 'y',
         scales: {
-          x: { beginAtZero: true, grace: narrow ? '55%' : o.grace || '28%', max: o.max, grid: gridOpts(t), border: { display: false }, ticks: ticks(t, { callback: o.tick, maxTicksLimit: narrow ? 4 : 6, maxRotation: 0 }), title: axisTitle(o.axis, t) },
-          y: { grid: { display: false }, border: { color: t.axis }, ticks: ticks(t, { autoSkip: false, callback: function (v) { return nameTick(narrow ? 16 : 28)(this.getLabelForValue(v)); }, font: { size: 11.5 } }) },
+          x: { beginAtZero: true, grace: o.grace || '28%', max: o.max, grid: gridOpts(t), border: { display: false }, ticks: ticks(t, { callback: o.tick, maxTicksLimit: 6, maxRotation: 0 }), title: axisTitle(o.axis, t) },
+          y: { grid: { display: false }, border: { color: t.axis }, ticks: ticks(t, { autoSkip: false, callback: function (v) { return nameTick(28)(this.getLabelForValue(v)); }, font: { size: 11.5 } }) },
         },
         plugins: {
           legend: { display: false },
@@ -1892,7 +1888,6 @@ body.printing .span-2 { grid-column: auto; }
     const cstep = maxGap * 3 <= 42 ? 7 : maxGap * 3 <= 98 ? 14 : 28;
     const cap = Math.max(28, Math.ceil((maxGap * 3) / cstep) * cstep);
     const off = (x) => x.since > cap;
-    const narrow = boxEl.clientWidth < 480;
     return make('cadence', {
       type: 'bar',
       data: {
@@ -1908,8 +1903,8 @@ body.printing .span-2 { grid-column: auto; }
         indexAxis: 'y',
         interaction: { mode: 'index', intersect: false, axis: 'y' },
         scales: {
-          x: { beginAtZero: true, max: cap, grid: gridOpts(t), border: { display: false }, ticks: ticks(t, { stepSize: narrow ? cstep * 2 : cstep, maxRotation: 0, callback: (v) => v + (v === cap ? '+' : '') }), title: axisTitle('Days', t), position: 'top' },
-          y: { grid: { display: false }, border: { color: t.axis }, ticks: ticks(t, { autoSkip: false, callback: function (v) { return nameTick(narrow ? 16 : 26)(this.getLabelForValue(v)); }, font: { size: 11.5 } }) },
+          x: { beginAtZero: true, max: cap, grid: gridOpts(t), border: { display: false }, ticks: ticks(t, { stepSize: cstep, maxRotation: 0, callback: (v) => v + (v === cap ? '+' : '') }), title: axisTitle('Days', t), position: 'top' },
+          y: { grid: { display: false }, border: { color: t.axis }, ticks: ticks(t, { autoSkip: false, callback: function (v) { return nameTick(26)(this.getLabelForValue(v)); }, font: { size: 11.5 } }) },
         },
         plugins: {
           legend: { labels: { usePointStyle: true } },
@@ -2357,7 +2352,7 @@ body.printing .span-2 { grid-column: auto; }
       $('cap-slopes').textContent = '';
     } else {
       const all = mo.slopes;
-      const K = 12;
+      const K = 15;
       let list = all;
       toggle.hidden = all.length <= K * 2;
       if (!state.slopesAll && all.length > K * 2) list = all.slice(0, K).concat(all.slice(-K));

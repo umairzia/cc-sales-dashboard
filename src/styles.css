@@ -102,7 +102,9 @@ code { font-family: var(--mono); font-size: 0.92em; background: var(--surface-2)
 button, input, select { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-#app { max-width: 1440px; margin: 0 auto; padding: 0 24px 24px; }
+/* Desktop only: the layout never collapses. Below ~1240px wide the page
+ * scrolls sideways instead; wide monitors get more room for the charts. */
+#app { min-width: 1240px; max-width: 1760px; margin: 0 auto; padding: 0 32px 32px; }
 
 /* --- Top bar ----------------------------------------------------------------- */
 .topbar {
@@ -208,6 +210,7 @@ button, input, select { font: inherit; color: inherit; }
 .section-title::before { content: ""; width: 4px; height: 18px; border-radius: 2px; background: var(--accent); }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap); align-items: start; }
 .span-2 { grid-column: 1 / -1; }
+.grid > .card.fill { align-self: stretch; }
 .stack { display: grid; gap: var(--gap); min-width: 0; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px 12px; min-width: 0; }
 .card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
@@ -269,7 +272,6 @@ table.data tbody tr:hover { background: var(--surface-2); }
 
 .stat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; }
 .stat-grid.wide { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-@media (max-width: 700px) { .stat-grid.wide { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .stat .k { font-size: 12px; color: var(--text-2); }
 .stat .v { font-size: 20px; font-weight: 650; }
 .stat .s { font-size: 12px; color: var(--muted); }
@@ -297,20 +299,16 @@ table.data tbody tr:hover { background: var(--surface-2); }
 .footer::before { content: "🔒"; display: none; }
 .footer-meta { color: var(--muted); }
 
-/* --- Responsive ---------------------------------------------------------------------------------- */
-@media (max-width: 1100px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 900px) {
-  #app { padding: 0 16px 16px; }
-  .grid, .intro-grid { grid-template-columns: minmax(0, 1fr); }
-  .span-2 { grid-column: auto; }
-  .chart-box.tall { height: 340px; }
-  .donut-row { grid-template-columns: minmax(0, 1fr); }
-}
-@media (max-width: 520px) {
-  .kpis { grid-template-columns: minmax(0, 1fr); }
-  .filters { position: static; }
-  .field { flex: 1 1 140px; }
-  .file-meta dd { max-width: 200px; }
+/* --- Wide desktop monitors ------------------------------------------------------------------------ */
+@media (min-width: 1700px) {
+  body:not(.printing) .kpis { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+  body:not(.printing) .kpi { padding: 12px 14px 10px; }
+  body:not(.printing) .kpi-value, body:not(.printing) .kpi.hero .kpi-value { font-size: 24px; }
+  body:not(.printing) .kpi-sub { white-space: normal; min-height: 2.9em; line-height: 1.45; }
+  body:not(.printing) .chart-box { height: 320px; }
+  body:not(.printing) .chart-box.tall { height: 460px; }
+  body:not(.printing) .chart-box.short { height: 240px; }
+  body:not(.printing) .chart-box.donut { height: 250px; }
 }
 
 /* --- Print ----------------------------------------------------------------------------------------
@@ -320,7 +318,7 @@ table.data tbody tr:hover { background: var(--surface-2); }
   @page { size: A4 portrait; margin: 12mm; }
   :root { --bg: #ffffff; --surface: #ffffff; }
   body { background: #fff; font-size: 11px; }
-  #app { max-width: none; padding: 0; }
+  #app { min-width: 0; max-width: none; padding: 0; }
   .topbar { padding-top: 0; }
   .btn, .filters, .intro, .drop-overlay, #slopesToggle, #cadenceToggle, .chips, .inline-field input { display: none !important; }
   .print-summary { display: block; color: var(--text-2); margin: 0 0 10px; font-size: 11px; }
@@ -348,7 +346,7 @@ table.data tbody tr:hover { background: var(--surface-2); }
   .dq .table-wrap tbody tr:nth-child(n+16) { display: table-row; }
   .footer { break-inside: avoid; }
 }
-body.printing #app { max-width: 700px; }
+body.printing #app { min-width: 0; max-width: 700px; padding: 0 24px; }
 @media screen { .print-img { display: none; } }
 body.printing .grid { grid-template-columns: minmax(0, 1fr); }
 body.printing .span-2 { grid-column: auto; }

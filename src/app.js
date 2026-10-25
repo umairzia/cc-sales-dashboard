@@ -308,7 +308,7 @@
       $('cap-slopes').textContent = '';
     } else {
       const all = mo.slopes;
-      const K = 12;
+      const K = 15;
       let list = all;
       toggle.hidden = all.length <= K * 2;
       if (!state.slopesAll && all.length > K * 2) list = all.slice(0, K).concat(all.slice(-K));

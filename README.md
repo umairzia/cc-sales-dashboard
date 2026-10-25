@@ -25,8 +25,8 @@ file that anyone on the team can open.
 ## Using it
 
 1. Download [`dashboard.html`](dashboard.html) (in GitHub, use **Download raw file**).
-2. Open it in Chrome, Edge, Firefox or Safari. It works straight from your
-   downloads folder (`file://`) with Wi-Fi switched off.
+2. Open it in a desktop browser (Chrome, Edge, Firefox or Safari). It works
+   straight from your downloads folder (`file://`) with Wi-Fi switched off.
 3. Drag a transaction export onto the page, or click to browse.
 4. Use the filter bar to narrow the date range, change the grouping
    (day / week / month / quarter), or show successful charges only.
@@ -165,6 +165,13 @@ mode follow the operating system.
 
 The brief left these open, or real data didn't match an assumption. Each is noted
 here so it isn't hidden in the code.
+
+**Layout**
+- **Desktop only.** The brief asked for a grid that collapses to one column under
+  ~900px; after the first version this was changed to desktop browsers only. The
+  layout keeps two columns at every width and has a 1,240px minimum (narrower
+  windows scroll sideways). On wide monitors (1,700px+) the eight KPI tiles sit in
+  one row and the charts get taller.
 
 **Data and cleaning**
 - **Two date formats.** The brief specified `DD/MM/YYYY` (day first). Newer exports
