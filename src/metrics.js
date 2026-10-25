@@ -152,7 +152,7 @@
     for (const g of groups.values()) {
       let hasF = false, hasB = false;
       let pending = [];
-      for (const r of g) { // rows arrive sorted by day, minute, line
+      for (const r of g) { // rows arrive sorted by day, second, line
         if (r.status === 'Failed') { hasF = true; failedTotal++; pending.push(r); continue; }
         hasB = true;
         if (pending.length) {
@@ -182,7 +182,7 @@
   // Main analysis
   // ---------------------------------------------------------------------------
   /**
-   * @param {Array} allRows  parsed rows (sorted by day/minute/line)
+   * @param {Array} allRows  parsed rows (sorted by day/second/line)
    * @param {Object} opt     { from, to, unit ('auto'|...), status ('all'|'success'), threshold (0..1) }
    */
   function analyse(allRows, opt) {
@@ -245,7 +245,7 @@
     const salesByCust = new Map();
     for (const r of sales) { if (!salesByCust.has(r.customer)) salesByCust.set(r.customer, []); salesByCust.get(r.customer).push(r); }
     const looseRecovered = retry.unrecovered.filter((f) => !f.oneTime &&
-      (salesByCust.get(f.customer) || []).some((x) => (x.day > f.day || (x.day === f.day && x.minute > f.minute)) && x.day - f.day <= 7)).length;
+      (salesByCust.get(f.customer) || []).some((x) => (x.day > f.day || (x.day === f.day && x.second > f.second)) && x.day - f.day <= 7)).length;
 
     // Totals -------------------------------------------------------------------
     const gross = sum(s.gross);

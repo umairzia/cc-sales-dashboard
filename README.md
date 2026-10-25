@@ -53,13 +53,13 @@ not bolted on:
 
 ## Input format
 
-A Global Payments / Realcontrol-style export has about 35 columns; six are used.
+A Global Payments / Realcontrol-style export has 35 to 117 columns, depending on its age; six are used.
 Columns are matched case-insensitively, in any order, and missing optional columns
 are tolerated. If a required column is missing, the dashboard says which one.
 
 | Source column | Becomes | Notes |
 |---|---|---|
-| `Date & Time` | date | `DD/MM/YYYY HH:MM`, **day first**. Parsed explicitly, never with `Date.parse()`. |
+| `Date & Time` | date | `DD/MM/YYYY HH:MM` (**day first**) or `YYYY-MM-DD HH:MM:SS`. Parsed explicitly, never with `Date.parse()`. |
 | `Customer Number` | customer name | Despite the name, it holds the customer name. |
 | `Amount` | amount | **Integer cents**, divided by 100. |
 | `Currency` | currency | Usually CAD. Optional. |
@@ -71,8 +71,9 @@ The full contract (aliases, encodings, edge cases) is in
 
 ### Cleaning rules
 
-- **Day-first dates.** `03/11/2025` is 3 November. Unreadable dates are rejected and
-  listed with their line numbers.
+- **Explicit dates.** Slash dates are always day first (`03/11/2025` is 3 November);
+  year-first dates (`2026-06-30 21:44:36`) are read as written. Month-first US dates
+  and anything else unreadable are rejected and listed with their line numbers.
 - **Cents.** Amounts are divided by 100; internally everything stays in integer cents
   so the totals are exact.
 - **Blank status = Failed.** An unsuccessful attempt is exported with an empty status.
@@ -166,6 +167,11 @@ The brief left these open, or real data didn't match an assumption. Each is note
 here so it isn't hidden in the code.
 
 **Data and cleaning**
+- **Two date formats.** The brief specified `DD/MM/YYYY` (day first). Newer exports
+  write `YYYY-MM-DD HH:MM:SS`, which is unambiguous because the year comes first,
+  so both are accepted. Slash dates are still always day first; month-first dates
+  are rejected, never swapped. Seconds, when present, order same-minute attempts,
+  which matters because exports list the newest rows first.
 - **Failed statuses carry a reason.** Real exports write
   `Failed - Result [101] Message [Declined]` rather than a blank, so any status
   *starting with* "Failed" counts as Failed and the message is kept as the reason.
@@ -303,8 +309,10 @@ dependency.
    on the sample, and on a real export.
 4. **Edge cases.** A 90-day file buckets weekly, a 5-year file quarterly, a
    one-customer file renders (with explanatory empty states where a chart needs
-   more customers), and a missing column, an unterminated quote, ISO dates and a
-   binary file each fail with a readable message.
+   more customers), the newer 117-column export layout (repeated column names,
+   quoted values, year-first dates) renders weekly, and a missing column, an
+   unterminated quote, month-first US dates and a binary file each fail with a
+   readable message.
 5. **Offline.** The build fails if any `src`, `href`, `fetch`, `url()` or
    `@import` points off the page, and the CSP blocks requests at runtime.
 6. **Size.** 100,000 rows (21 MB) parse and analyse in about 2 seconds.

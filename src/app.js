@@ -609,7 +609,11 @@
     const rejected = q.totalDataRows - q.parsed;
     const sampleLines = (arr, f) => arr.slice(0, 8).map(f).join('; ') + (arr.length > 8 ? '; …' : '');
     add(rejected ? 'warn' : 'ok', 'Rows parsed', F.int(q.parsed) + ' of ' + F.int(q.totalDataRows), q.blankLines ? plural(q.blankLines, 'blank line') + ' skipped' : '');
-    add(q.badDate.length ? 'warn' : 'ok', 'Rows with unparseable dates', F.int(q.badDate.length), q.badDate.length ? 'Excluded. ' + sampleLines(q.badDate, (r) => 'line ' + r.line + ': “' + r.value + '”') : 'All dates read as DD/MM/YYYY (day first)');
+    add(q.badDate.length ? 'warn' : 'ok', 'Rows with unparseable dates', F.int(q.badDate.length), q.badDate.length ? 'Excluded. ' + sampleLines(q.badDate, (r) => 'line ' + r.line + ': “' + r.value + '”') : '');
+    const fmts = Object.keys(q.dateFormats);
+    add(fmts.length > 1 ? 'warn' : 'info', 'Date format', fmts.map((f) => P.DATE_FORMATS[f]).join(' + '),
+      fmts.length > 1 ? 'This file mixes formats (' + fmts.map((f) => F.int(q.dateFormats[f]) + ' ' + P.DATE_FORMATS[f]).join(', ') + '). Both are unambiguous, so every row was still read correctly, but check how the export was produced.'
+        : 'Detected automatically. Slash dates are always read day first (03/11/2025 = 3 November); month-first dates are rejected.');
     if (q.badAmount.length) add('warn', 'Rows with unreadable amounts', F.int(q.badAmount.length), 'Excluded. Amount must be whole cents. ' + sampleLines(q.badAmount, (r) => 'line ' + r.line + ': “' + r.value + '”'));
     if (q.shortRows.length) add('warn', 'Rows with too few fields', F.int(q.shortRows.length), 'Excluded. ' + sampleLines(q.shortRows, (r) => 'line ' + r.line + ' (' + r.got + ' fields)'));
     if (q.unknownStatus.length) add('warn', 'Unrecognised status values', F.int(q.unknownStatus.length), 'Excluded. ' + sampleLines(q.unknownStatus, (r) => 'line ' + r.line + ': “' + r.value + '”'));

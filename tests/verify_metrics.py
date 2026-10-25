@@ -40,9 +40,11 @@ def load(path: str) -> pd.DataFrame:
     df = pd.DataFrame({k: raw[v] for k, v in cols.items()})
     df["order"] = np.arange(len(df))
 
+    # Day-first slash dates or year-first ISO dates; each format tried explicitly.
     stamp = df["date"].str.strip()
-    ts = pd.to_datetime(stamp, format="%d/%m/%Y %H:%M", errors="coerce")
-    ts = ts.fillna(pd.to_datetime(stamp, format="%d/%m/%Y", errors="coerce"))
+    ts = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+    for fmt in ["%d/%m/%Y %H:%M", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"]:
+        ts = ts.fillna(pd.to_datetime(stamp, format=fmt, errors="coerce"))
     df["ts"] = ts
     df["cents"] = pd.to_numeric(df["amount"].str.replace(",", "").str.strip(), errors="coerce")
     st = df["status"].str.strip()

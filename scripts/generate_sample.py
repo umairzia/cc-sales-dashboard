@@ -38,6 +38,16 @@ HEADER = [
     "Customer IP Address", "Merchant ID", "Transaction Type", "type",
 ]
 
+# Column names of the newer (2026) export: same fields plus repeated blocks.
+_REPEAT = ["type"] + [f"field{i:02d}" for i in range(1, 15)]
+HEADER_2026 = (["Batch ID", "Date & Time", "Order ID", "Cardholder's Name", "Customer Number", "Product ID", "Variable Ref",
+                "Amount", "Currency", "Card Type", "PASRef", "Authcode", "Autosettle flag", "TSS Score", "Transaction Source",
+                "Comment 1", "Comment 2", "Issuing Bank", "Issuer Country", "Issuer Country Code", "Settle time", "Void Comment",
+                "Foreign Currency Amount", "Foreign Currency", "CCP Rate", "Currency Processor", "Account", "Status",
+                "Security Code Result", "AVS Result", "Acquirer Reference", "User Department", "3D Secure CAVV", "3D Secure ECI",
+                "Card Number", "Transaction Originating IP", "Customer IP Address", "Merchant ID", "Transaction Type"]
+               + _REPEAT * 5 + ["Order Reference", "Fraud Result", "CTP"])
+
 WORDS_A = [
     "Maple", "Harbour", "Copper", "Golden", "Willow", "Juniper", "Saffron", "Birch", "Cedar", "Lantern",
     "Marigold", "Pepper", "Olive", "Basil", "Thyme", "Fennel", "Sumac", "Clover", "Bramble", "Orchard",
@@ -325,13 +335,42 @@ def fixtures(dirpath: Path) -> None:
         '04/11/2025 15:10,"Cedar Grill,98000,CAD,VISA,Batched\n'
         "05/11/2025 16:20,Fig Deli,45000,CAD,MC,Batched\n", encoding="utf-8")
 
-    # Wrong date format (ISO / month-first): every row rejected with a readable reason.
-    write_csv(dirpath / "iso_dates.csv", ["Date & Time", "Customer Number", "Amount", "Currency", "Card Type", "Status"],
-              [["2025-11-03 14:05", "Maple Kitchen", "120000", "CAD", "VISA", "Batched"],
-               ["2025-11-04 09:30", "Fig Deli", "45000", "CAD", "MC", "Batched"]])
+    # Month-first (US) dates: 12/31/2025 cannot be day-first, so every row is
+    # rejected with a readable reason rather than silently swapped.
+    write_csv(dirpath / "us_dates.csv", ["Date & Time", "Customer Number", "Amount", "Currency", "Card Type", "Status"],
+              [["12/31/2025 14:05", "Maple Kitchen", "120000", "CAD", "VISA", "Batched"],
+               ["12/30/2025 09:30", "Fig Deli", "45000", "CAD", "MC", "Batched"]])
 
     # Not a CSV at all.
     (dirpath / "not_a_csv.csv").write_bytes(b"PK\x03\x04\x14\x00\x06\x00\x08\x00\x00\x00!\x00binary-xlsx-ish\x00\x00")
+
+    # The 2026 export layout: ~117 columns with repeated names (type, field01-14
+    # five times), every value quoted except the timestamp, and year-first
+    # dates with seconds (2026-06-30 21:44:36). Six months → weekly buckets.
+    start, end = date(2026, 1, 2), date(2026, 6, 30)
+    custs = build_customers(rng, 40, start, end)
+    txns = simulate(rng, custs, start, end)
+    txns.sort(key=lambda t: t.when, reverse=True)
+    q = lambda v: '"' + str(v).replace('"', '""') + '"'
+    lines = [",".join(HEADER_2026)]
+    for t in txns:
+        r = dict.fromkeys(dict.fromkeys(HEADER_2026), "")
+        r.update({"Batch ID": "20000001", "Order ID": f"{rng.getrandbits(100):025x}", "Cardholder's Name": t.cardholder,
+                  "Customer Number": t.customer, "Variable Ref": t.ref, "Amount": str(t.cents), "Currency": "CAD",
+                  "Card Type": t.card, "PASRef": str(rng.randint(10**15, 10**16 - 1)), "Autosettle flag": "1",
+                  "Transaction Source": "realcontrol auto", "Comment 2": "accounting", "Void Comment": t.void_note,
+                  "Account": "moto", "Status": t.status, "Card Number": CARD_PREFIX[t.card] + "XXX" + t.last4,
+                  "Merchant ID": "0000000000", "Transaction Type": t.txn_type, "CTP": "0"})
+        cells = []
+        for h in HEADER_2026:
+            if h == "Date & Time":
+                cells.append(t.when.strftime("%Y-%m-%d %H:%M:") + f"{rng.randint(0, 59):02d}")
+            elif h == "Settle time":
+                cells.append("")
+            else:
+                cells.append(q(r[h]))
+        lines.append(",".join(cells))
+    (dirpath / "export_2026_layout.csv").write_text("\ufeff" + "\r\n".join(lines) + "\r\n", encoding="utf-8", newline="")
     print(f"wrote fixtures to {dirpath.relative_to(ROOT)}")
 
 

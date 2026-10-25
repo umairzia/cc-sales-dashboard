@@ -13,7 +13,7 @@ independently in pandas and asserts that the two agree.
 | Encoding | UTF-8, with or without a byte-order mark |
 | Line endings | `\r\n`, `\n` or `\r` |
 | Quoting | RFC 4180: fields may be wrapped in `"…"`, may contain commas and line breaks, and `""` is a literal quote |
-| Extra columns | Ignored (a typical export has ~35) |
+| Extra columns | Ignored. Older exports have ~35 columns; newer ones ~117, with repeated names such as `type` and `field01`–`field14` |
 | Column order | Any |
 | Size | Tested to 100,000 rows (about 2 seconds to parse and analyse) |
 
@@ -27,7 +27,7 @@ a letter or digit, so `Date & Time`, `date and time` and `DATE_TIME` all match.
 
 | Purpose | Required | Names recognised | Notes |
 |---|---|---|---|
-| `date` | yes | Date & Time, Date and Time, Transaction Date, Date | **Day first**: `DD/MM/YYYY HH:MM` (time optional, seconds allowed). `03/11/2025` is 3 November. |
+| `date` | yes | Date & Time, Date and Time, Transaction Date, Date | `DD/MM/YYYY HH:MM` (**day first**, older exports) or `YYYY-MM-DD HH:MM:SS` (year first, newer exports). Time optional, seconds allowed. `03/11/2025` is 3 November. |
 | `customer_name` | yes | Customer Number, Customer Name, Customer | Despite the name, this column holds the customer *name*. |
 | `amount` | yes | Amount, Amount Cents, Transaction Amount | **Integer cents.** `263391` = $2,633.91. Thousands separators are tolerated; decimals are rejected. |
 | `card_type` | yes | Card Type, Card Scheme, Card Brand | Upper-cased. A bare `type` column is **not** treated as card type. |
@@ -40,11 +40,19 @@ column(s), along with the columns it did find.
 
 ## Cleaning rules
 
-1. **Dates are parsed explicitly as day-first**, never with `Date.parse()`.
-   Impossible dates (`31/02/2025`), month-first values that can't be day-first
-   (`11/13/2025`) and ISO dates (`2025-11-03`) are rejected and listed in the
-   data-quality panel with their line numbers. The time is used only to order
-   attempts made on the same day.
+1. **Dates are parsed explicitly**, never with `Date.parse()`. Two formats are
+   accepted, each with an optional time (`HH:MM` or `HH:MM:SS`):
+   - `DD/MM/YYYY`: slashes (or dots/dashes) with the year *last* are always
+     read **day first**, so `03/11/2025` is 3 November.
+   - `YYYY-MM-DD`: a 4-digit year *first* is unambiguous (newer exports
+     write `2026-06-30 21:44:36`).
+
+   The format is detected per row, and the data-quality panel reports which
+   one the file used (and warns if a file mixes them). Impossible dates
+   (`31/02/2025`), month-first US dates (`12/31/2025`) and two-digit years
+   are rejected and listed with their line numbers; nothing is guessed or
+   swapped. The time (to the second) is used only to order attempts made on
+   the same day.
 2. **Amount is divided by 100.** Internally everything stays in integer cents
    so totals are exact.
 3. **Status** is normalised to exactly three values:

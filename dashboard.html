@@ -408,7 +408,7 @@ body.printing .span-2 { grid-column: auto; }
         <table class="format-table">
           <thead><tr><th>Column</th><th>Used as</th></tr></thead>
           <tbody>
-            <tr><td><code>Date &amp; Time</code></td><td>Date, <strong>day first</strong>: <code>DD/MM/YYYY HH:MM</code></td></tr>
+            <tr><td><code>Date &amp; Time</code></td><td><code>DD/MM/YYYY HH:MM</code> (<strong>day first</strong>) or <code>YYYY-MM-DD HH:MM:SS</code></td></tr>
             <tr><td><code>Customer Number</code></td><td>Customer name (blank = one-time manual charge)</td></tr>
             <tr><td><code>Amount</code></td><td>Whole <strong>cents</strong>: <code>263391</code> = $2,633.91</td></tr>
             <tr><td><code>Card Type</code></td><td>VISA / MC / AMEX</td></tr>
@@ -787,23 +787,32 @@ body.printing .span-2 { grid-column: auto; }
   // Field parsers
   // ---------------------------------------------------------------------------
   const DAY_MS = 86400000;
-  const DATE_RE = /^\s*(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?\s*$/;
+  const TIME = '(?:[ T]+(\\d{1,2}):(\\d{2})(?::(\\d{2})(?:\\.\\d+)?)?)?';
+  // DD/MM/YYYY — day first (the original export). Never read as month first.
+  const DAY_FIRST_RE = new RegExp('^\\s*(\\d{1,2})[\\/.\\-](\\d{1,2})[\\/.\\-](\\d{4})' + TIME + '\\s*$');
+  // YYYY-MM-DD — year first (newer exports). A leading 4-digit year is never ambiguous.
+  const YEAR_FIRST_RE = new RegExp('^\\s*(\\d{4})[\\/.\\-](\\d{1,2})[\\/.\\-](\\d{1,2})' + TIME + '\\s*$');
+  const DATE_FORMATS = { dmy: 'DD/MM/YYYY (day first)', ymd: 'YYYY-MM-DD (year first)' };
 
-  /** Parse DD/MM/YYYY [HH:MM[:SS]] explicitly — day first. Never Date.parse().
-   *  Returns { day, minute } where day = days since 1970-01-01 (UTC calendar,
-   *  so no timezone drift) and minute = minute-of-day (used only for ordering
-   *  same-day attempts), or null when invalid. */
-  function parseDayFirst(raw) {
-    const m = DATE_RE.exec(raw);
-    if (!m) return null;
-    const d = +m[1], mo = +m[2], y = +m[3];
+  /** Parse a transaction timestamp explicitly. Never Date.parse().
+   *  Accepts DD/MM/YYYY [HH:MM[:SS]] (day first) and YYYY-MM-DD [HH:MM[:SS]]
+   *  (year first). Anything else — including month-first US dates — is null.
+   *  Returns { day, second, fmt } where day = days since 1970-01-01 (UTC
+   *  calendar, so no timezone drift), second = second of the day (used only to
+   *  order attempts on the same day) and fmt = 'dmy' | 'ymd'. */
+  function parseDate(raw) {
+    let m = DAY_FIRST_RE.exec(raw), d, mo, y, fmt;
+    if (m) { d = +m[1]; mo = +m[2]; y = +m[3]; fmt = 'dmy'; }
+    else if ((m = YEAR_FIRST_RE.exec(raw))) { y = +m[1]; mo = +m[2]; d = +m[3]; fmt = 'ymd'; }
+    else return null;
     const hh = m[4] === undefined ? 0 : +m[4];
     const mi = m[5] === undefined ? 0 : +m[5];
-    if (mo < 1 || mo > 12 || d < 1 || y < 1900 || y > 2200 || hh > 23 || mi > 59) return null;
+    const ss = m[6] === undefined ? 0 : +m[6];
+    if (mo < 1 || mo > 12 || d < 1 || y < 1900 || y > 2200 || hh > 23 || mi > 59 || ss > 59) return null;
     const ms = Date.UTC(y, mo - 1, d);
     const check = new Date(ms);
     if (check.getUTCDate() !== d) return null; // e.g. 31/02/2025
-    return { day: Math.round(ms / DAY_MS), minute: hh * 60 + mi };
+    return { day: Math.round(ms / DAY_MS), second: hh * 3600 + mi * 60 + ss, fmt };
   }
 
   /** Amount is integer cents. Accepts an optional sign and thousands commas.
@@ -861,7 +870,7 @@ body.printing .span-2 { grid-column: auto; }
 
     const q = {
       totalDataRows: 0, parsed: 0, blankLines: 0,
-      badDate: [], badAmount: [], shortRows: [], unknownStatus: [],
+      badDate: [], badAmount: [], shortRows: [], unknownStatus: [], dateFormats: {},
       blankCustomer: 0, blankStatus: 0, suffixedFailed: 0,
       negative: [], zero: [], currencies: {}, cardTypes: {},
       columns: Object.fromEntries(Object.entries(found).map(([k, i]) => [k, header[i]])),
@@ -881,7 +890,7 @@ body.printing .span-2 { grid-column: auto; }
         continue;
       }
       const rawDate = cells[found.date];
-      const dt = parseDayFirst(rawDate);
+      const dt = parseDate(rawDate);
       if (!dt) { sample(q.badDate, { line, value: rawDate }); continue; }
       const rawAmt = cells[found.amount];
       const cents = parseCents(rawAmt);
@@ -900,7 +909,7 @@ body.printing .span-2 { grid-column: auto; }
       q.cardTypes[card] = (q.cardTypes[card] || 0) + 1;
 
       const row = {
-        line, day: dt.day, minute: dt.minute, customer, oneTime,
+        line, day: dt.day, second: dt.second, customer, oneTime,
         cents, currency, card, status: st.status,
         reason: st.status === 'Failed' ? st.reason : '',
         voidNote: found.voidNote !== undefined ? (cells[found.voidNote] || '').trim() : '',
@@ -909,13 +918,14 @@ body.printing .span-2 { grid-column: auto; }
       if (cents === 0) sample(q.zero, row);
       out.push(row);
       q.parsed++;
+      q.dateFormats[dt.fmt] = (q.dateFormats[dt.fmt] || 0) + 1;
     }
 
     if (!q.totalDataRows) throw userError('The file has a header row but no transactions.');
     if (!out.length) {
       const first = q.badDate[0] || q.badAmount[0] || q.shortRows[0] || q.unknownStatus[0];
       let why = '';
-      if (q.badDate.length) why = 'Row on line ' + first.line + ' has date “' + first.value + '”, expected DD/MM/YYYY HH:MM.';
+      if (q.badDate.length) why = 'Row on line ' + first.line + ' has date “' + first.value + '”, expected DD/MM/YYYY HH:MM (day first) or YYYY-MM-DD HH:MM:SS.';
       else if (q.badAmount.length) why = 'Row on line ' + first.line + ' has amount “' + first.value + '”, expected whole cents (e.g. 263391 for $2,633.91).';
       else if (q.shortRows.length) why = 'Row on line ' + first.line + ' has only ' + first.got + ' fields; ' + first.need + ' expected.';
       else if (q.unknownStatus.length) why = 'Row on line ' + first.line + ' has status “' + first.value + '”, expected Batched, Failed or Voided.';
@@ -927,7 +937,7 @@ body.printing .span-2 { grid-column: auto; }
         describeFirstProblem(q));
     }
 
-    out.sort((a, b) => a.day - b.day || a.minute - b.minute || a.line - b.line);
+    out.sort((a, b) => a.day - b.day || a.second - b.second || a.line - b.line);
     return { rows: out, quality: q, meta: { header, fileName: opts.fileName || '' } };
   }
 
@@ -947,7 +957,7 @@ body.printing .span-2 { grid-column: auto; }
     return e;
   }
 
-  const api = { parseCSV, detectColumns, parseDayFirst, parseCents, normaliseStatus, parseTransactions, COLUMNS, ONE_TIME, DAY_MS };
+  const api = { parseCSV, detectColumns, parseDate, DATE_FORMATS, parseCents, normaliseStatus, parseTransactions, COLUMNS, ONE_TIME, DAY_MS };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.CCParse = api;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -1108,7 +1118,7 @@ body.printing .span-2 { grid-column: auto; }
     for (const g of groups.values()) {
       let hasF = false, hasB = false;
       let pending = [];
-      for (const r of g) { // rows arrive sorted by day, minute, line
+      for (const r of g) { // rows arrive sorted by day, second, line
         if (r.status === 'Failed') { hasF = true; failedTotal++; pending.push(r); continue; }
         hasB = true;
         if (pending.length) {
@@ -1138,7 +1148,7 @@ body.printing .span-2 { grid-column: auto; }
   // Main analysis
   // ---------------------------------------------------------------------------
   /**
-   * @param {Array} allRows  parsed rows (sorted by day/minute/line)
+   * @param {Array} allRows  parsed rows (sorted by day/second/line)
    * @param {Object} opt     { from, to, unit ('auto'|...), status ('all'|'success'), threshold (0..1) }
    */
   function analyse(allRows, opt) {
@@ -1201,7 +1211,7 @@ body.printing .span-2 { grid-column: auto; }
     const salesByCust = new Map();
     for (const r of sales) { if (!salesByCust.has(r.customer)) salesByCust.set(r.customer, []); salesByCust.get(r.customer).push(r); }
     const looseRecovered = retry.unrecovered.filter((f) => !f.oneTime &&
-      (salesByCust.get(f.customer) || []).some((x) => (x.day > f.day || (x.day === f.day && x.minute > f.minute)) && x.day - f.day <= 7)).length;
+      (salesByCust.get(f.customer) || []).some((x) => (x.day > f.day || (x.day === f.day && x.second > f.second)) && x.day - f.day <= 7)).length;
 
     // Totals -------------------------------------------------------------------
     const gross = sum(s.gross);
@@ -2648,7 +2658,11 @@ body.printing .span-2 { grid-column: auto; }
     const rejected = q.totalDataRows - q.parsed;
     const sampleLines = (arr, f) => arr.slice(0, 8).map(f).join('; ') + (arr.length > 8 ? '; …' : '');
     add(rejected ? 'warn' : 'ok', 'Rows parsed', F.int(q.parsed) + ' of ' + F.int(q.totalDataRows), q.blankLines ? plural(q.blankLines, 'blank line') + ' skipped' : '');
-    add(q.badDate.length ? 'warn' : 'ok', 'Rows with unparseable dates', F.int(q.badDate.length), q.badDate.length ? 'Excluded. ' + sampleLines(q.badDate, (r) => 'line ' + r.line + ': “' + r.value + '”') : 'All dates read as DD/MM/YYYY (day first)');
+    add(q.badDate.length ? 'warn' : 'ok', 'Rows with unparseable dates', F.int(q.badDate.length), q.badDate.length ? 'Excluded. ' + sampleLines(q.badDate, (r) => 'line ' + r.line + ': “' + r.value + '”') : '');
+    const fmts = Object.keys(q.dateFormats);
+    add(fmts.length > 1 ? 'warn' : 'info', 'Date format', fmts.map((f) => P.DATE_FORMATS[f]).join(' + '),
+      fmts.length > 1 ? 'This file mixes formats (' + fmts.map((f) => F.int(q.dateFormats[f]) + ' ' + P.DATE_FORMATS[f]).join(', ') + '). Both are unambiguous, so every row was still read correctly, but check how the export was produced.'
+        : 'Detected automatically. Slash dates are always read day first (03/11/2025 = 3 November); month-first dates are rejected.');
     if (q.badAmount.length) add('warn', 'Rows with unreadable amounts', F.int(q.badAmount.length), 'Excluded. Amount must be whole cents. ' + sampleLines(q.badAmount, (r) => 'line ' + r.line + ': “' + r.value + '”'));
     if (q.shortRows.length) add('warn', 'Rows with too few fields', F.int(q.shortRows.length), 'Excluded. ' + sampleLines(q.shortRows, (r) => 'line ' + r.line + ' (' + r.got + ' fields)'));
     if (q.unknownStatus.length) add('warn', 'Unrecognised status values', F.int(q.unknownStatus.length), 'Excluded. ' + sampleLines(q.unknownStatus, (r) => 'line ' + r.line + ': “' + r.value + '”'));

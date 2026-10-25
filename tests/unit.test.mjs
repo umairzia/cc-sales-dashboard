@@ -18,15 +18,40 @@ test('CSV tokenizer: quotes, escaped quotes, CRLF, BOM, newlines in quotes', () 
   assert.throws(() => P.parseCSV('a,b\n"open,1\n'), /Unterminated quoted field starting on line 2/);
 });
 
-test('dates are day-first and never guessed', () => {
-  assert.equal(iso(P.parseDayFirst('03/11/2025 14:05').day), '2025-11-03');
-  assert.equal(P.parseDayFirst('03/11/2025 14:05').minute, 14 * 60 + 5);
-  assert.equal(iso(P.parseDayFirst('3/1/2025').day), '2025-01-03');
-  assert.equal(iso(P.parseDayFirst('29/02/2024 00:00').day), '2024-02-29');
-  assert.equal(P.parseDayFirst('31/02/2025 10:00'), null);
-  assert.equal(P.parseDayFirst('11/13/2025'), null); // month 13: month-first input is rejected
-  assert.equal(P.parseDayFirst('2025-11-03 14:05'), null);
-  assert.equal(P.parseDayFirst(''), null);
+test('dates: day-first slashes or year-first ISO, never guessed', () => {
+  const D = (v) => P.parseDate(v);
+  assert.equal(iso(D('03/11/2025 14:05').day), '2025-11-03');
+  assert.equal(D('03/11/2025 14:05').second, (14 * 60 + 5) * 60);
+  assert.equal(D('03/11/2025 14:05').fmt, 'dmy');
+  assert.equal(iso(D('3/1/2025').day), '2025-01-03');
+  assert.equal(iso(D('29/02/2024 00:00').day), '2024-02-29');
+  assert.equal(D('31/02/2025 10:00'), null);
+  assert.equal(D('12/31/2025'), null); // month-first (US) input is rejected, not swapped
+  // Year-first (the 2026 export): unambiguous, seconds kept for ordering.
+  assert.equal(iso(D('2026-06-30 21:44:36').day), '2026-06-30');
+  assert.equal(D('2026-06-30 21:44:36').second, 21 * 3600 + 44 * 60 + 36);
+  assert.equal(D('2026-06-30 21:44:36').fmt, 'ymd');
+  assert.equal(iso(D('2026-01-02T16:16:25').day), '2026-01-02');
+  assert.equal(iso(D('2026/03/11').day), '2026-03-11'); // never 3 November
+  assert.equal(D('2026-02-30 10:00:00'), null);
+  assert.equal(D('2026-13-01 10:00:00'), null);
+  assert.equal(D('2026-06-30 25:00:00'), null);
+  assert.equal(D('30-06-26'), null); // 2-digit years are ambiguous
+  assert.equal(D(''), null);
+});
+
+test('the 2026 export layout: repeated column names, quoted values, year-first dates', () => {
+  const hdr = 'Batch ID,Date & Time,Order ID,Customer Number,Amount,Currency,Card Type,Settle time,Status,type,field01,type,field01,CTP';
+  const r = P.parseTransactions([hdr,
+    '"1",2026-06-30 21:44:36,"a","Fig Deli","550248","CAD","VISA",,"Failed - Result [101] Message [Declined]","","","","","0"',
+    '"1",2026-06-30 21:44:59,"b","Fig Deli","550248","CAD","VISA",,"Batched","","","","","0"',
+    '"1",2026-06-30 21:44:10,"c","Fig Deli","100","CAD","VISA",,"Voided","","","","","0"'].join('\r\n'));
+  assert.equal(r.rows.length, 3);
+  assert.deepEqual(r.quality.dateFormats, { ymd: 3 });
+  // Same minute, listed newest first: seconds put the failure before the success.
+  assert.deepEqual(r.rows.map((x) => x.status), ['Voided', 'Failed', 'Batched']);
+  assert.equal(M.retryChains(r.rows).chains.length, 1);
+  assert.throws(() => P.parseTransactions(csv('12/31/2025 14:05,x,1,CAD,VISA,Batched')), (e) => /expected DD\/MM\/YYYY HH:MM \(day first\) or YYYY-MM-DD/.test(e.detail));
 });
 
 test('amounts are integer cents', () => {
@@ -76,7 +101,7 @@ test('cleaning rules: blanks, negatives, zeros, readable failures', () => {
   assert.equal(r.quality.badDate[0].line, 6);
 
   assert.throws(() => P.parseTransactions('Date & Time,Customer Number,Amount\n01/01/2025,x,1'), /Missing required columns: Card Type, Status/);
-  assert.throws(() => P.parseTransactions(csv('2025-01-01,x,1,CAD,VISA,Batched')), (e) => /None of the 1 rows/.test(e.message) && /expected DD\/MM\/YYYY/.test(e.detail));
+  assert.throws(() => P.parseTransactions(csv('2025.01.01.,x,1,CAD,VISA,Batched')), (e) => /None of the 1 rows/.test(e.message) && /expected DD\/MM\/YYYY/.test(e.detail));
   assert.throws(() => P.parseTransactions('PK\u0003\u0004\u0000\u0000'), /does not look like a CSV/);
   assert.throws(() => P.parseTransactions(''), /empty/);
 });
@@ -93,7 +118,7 @@ test('adaptive bucketing thresholds', () => {
 });
 
 test('buckets: Monday weeks, calendar months/quarters, partial edges', () => {
-  const d = (s) => P.parseDayFirst(s).day;
+  const d = (s) => P.parseDate(s).day;
   const weeks = M.buildBuckets(d('08/01/2025'), d('22/01/2025'), 'week'); // Wed → Wed
   assert.deepEqual(weeks.map((b) => iso(b.start)), ['2025-01-06', '2025-01-13', '2025-01-20']);
   assert.deepEqual(weeks.map((b) => b.partial), [true, false, true]);
@@ -107,7 +132,7 @@ test('buckets: Monday weeks, calendar months/quarters, partial edges', () => {
 });
 
 test('retry chains: sequential failure → success, never double counted', () => {
-  const row = (day, status, cents = 5000, card = 'VISA', customer = 'A') => ({ day, minute: 0, line: day, customer, cents, card, status, oneTime: false });
+  const row = (day, status, cents = 5000, card = 'VISA', customer = 'A') => ({ day, second: 0, line: day, customer, cents, card, status, oneTime: false });
   let r = M.retryChains([row(1, 'Failed'), row(2, 'Failed'), row(4, 'Batched')]);
   assert.equal(r.chains.length, 1);
   assert.equal(r.chains[0].attempts, 3);

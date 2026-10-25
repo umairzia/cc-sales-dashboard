@@ -3,7 +3,7 @@
 # synthetic sample + edge cases, and an independent pandas cross-check.
 #
 #   tests/run_all.sh                     # synthetic data only
-#   tests/run_all.sh path/to/export.csv  # also check a real export (results go
+#   tests/run_all.sh a.csv [b.csv ...]   # also check real exports (results go
 #                                        # to a temp dir outside the repo)
 # Needs: python3 + pandas + numpy, node + playwright (Chromium).
 set -uo pipefail
@@ -34,20 +34,23 @@ run node tests/e2e.mjs tests/fixtures/span_90_days.csv --out "$OUT" --expect-uni
 run python3 tests/verify_metrics.py tests/fixtures/span_90_days.csv "$OUT/span_90_days.json"
 run node tests/e2e.mjs tests/fixtures/span_5_years.csv --out "$OUT" --expect-unit quarter --interact
 run python3 tests/verify_metrics.py tests/fixtures/span_5_years.csv "$OUT/span_5_years.json"
+run node tests/e2e.mjs tests/fixtures/export_2026_layout.csv --out "$OUT" --expect-unit week --interact
+run python3 tests/verify_metrics.py tests/fixtures/export_2026_layout.csv "$OUT/export_2026_layout.json"
 run node tests/e2e.mjs tests/fixtures/one_customer.csv --out "$OUT" --expect-unit week --interact
 run python3 tests/verify_metrics.py tests/fixtures/one_customer.csv "$OUT/one_customer.json"
 run node tests/e2e.mjs tests/fixtures/missing_status_column.csv --out "$OUT" --expect-error "Missing required column: Status"
 run node tests/e2e.mjs tests/fixtures/malformed_quote.csv --out "$OUT" --expect-error "Unterminated quoted field starting on line 3"
-run node tests/e2e.mjs tests/fixtures/iso_dates.csv --out "$OUT" --expect-error "expected DD/MM/YYYY"
+run node tests/e2e.mjs tests/fixtures/us_dates.csv --out "$OUT" --expect-error "expected DD/MM/YYYY HH:MM (day first) or YYYY-MM-DD"
 run node tests/e2e.mjs tests/fixtures/not_a_csv.csv --out "$OUT" --expect-error "does not look like a CSV"
 
-if [ "${1:-}" != "" ]; then
-  step "Browser + pandas: $(basename "$1") (results kept outside the repo)"
-  REAL=$(mktemp -d)
-  run node tests/e2e.mjs "$1" --out "$REAL" --name real --interact
-  run python3 tests/verify_metrics.py "$1" "$REAL/real.json"
-  echo "   results: $REAL"
-fi
+REAL=$(mktemp -d)
+for f in "$@"; do
+  step "Browser + pandas: $(basename "$f") (results kept outside the repo)"
+  n=$(basename "$f" .csv)
+  run node tests/e2e.mjs "$f" --out "$REAL" --name "$n" --interact
+  run python3 tests/verify_metrics.py "$f" "$REAL/$n.json"
+done
+[ "$#" -gt 0 ] && echo "   results: $REAL" || rmdir "$REAL"
 
 step "Result"
 if [ "$fails" -eq 0 ]; then echo "ALL CHECKS PASSED"; else echo "$fails CHECK GROUP(S) FAILED"; fi

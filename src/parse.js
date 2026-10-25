@@ -104,23 +104,32 @@
   // Field parsers
   // ---------------------------------------------------------------------------
   const DAY_MS = 86400000;
-  const DATE_RE = /^\s*(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?\s*$/;
+  const TIME = '(?:[ T]+(\\d{1,2}):(\\d{2})(?::(\\d{2})(?:\\.\\d+)?)?)?';
+  // DD/MM/YYYY — day first (the original export). Never read as month first.
+  const DAY_FIRST_RE = new RegExp('^\\s*(\\d{1,2})[\\/.\\-](\\d{1,2})[\\/.\\-](\\d{4})' + TIME + '\\s*$');
+  // YYYY-MM-DD — year first (newer exports). A leading 4-digit year is never ambiguous.
+  const YEAR_FIRST_RE = new RegExp('^\\s*(\\d{4})[\\/.\\-](\\d{1,2})[\\/.\\-](\\d{1,2})' + TIME + '\\s*$');
+  const DATE_FORMATS = { dmy: 'DD/MM/YYYY (day first)', ymd: 'YYYY-MM-DD (year first)' };
 
-  /** Parse DD/MM/YYYY [HH:MM[:SS]] explicitly — day first. Never Date.parse().
-   *  Returns { day, minute } where day = days since 1970-01-01 (UTC calendar,
-   *  so no timezone drift) and minute = minute-of-day (used only for ordering
-   *  same-day attempts), or null when invalid. */
-  function parseDayFirst(raw) {
-    const m = DATE_RE.exec(raw);
-    if (!m) return null;
-    const d = +m[1], mo = +m[2], y = +m[3];
+  /** Parse a transaction timestamp explicitly. Never Date.parse().
+   *  Accepts DD/MM/YYYY [HH:MM[:SS]] (day first) and YYYY-MM-DD [HH:MM[:SS]]
+   *  (year first). Anything else — including month-first US dates — is null.
+   *  Returns { day, second, fmt } where day = days since 1970-01-01 (UTC
+   *  calendar, so no timezone drift), second = second of the day (used only to
+   *  order attempts on the same day) and fmt = 'dmy' | 'ymd'. */
+  function parseDate(raw) {
+    let m = DAY_FIRST_RE.exec(raw), d, mo, y, fmt;
+    if (m) { d = +m[1]; mo = +m[2]; y = +m[3]; fmt = 'dmy'; }
+    else if ((m = YEAR_FIRST_RE.exec(raw))) { y = +m[1]; mo = +m[2]; d = +m[3]; fmt = 'ymd'; }
+    else return null;
     const hh = m[4] === undefined ? 0 : +m[4];
     const mi = m[5] === undefined ? 0 : +m[5];
-    if (mo < 1 || mo > 12 || d < 1 || y < 1900 || y > 2200 || hh > 23 || mi > 59) return null;
+    const ss = m[6] === undefined ? 0 : +m[6];
+    if (mo < 1 || mo > 12 || d < 1 || y < 1900 || y > 2200 || hh > 23 || mi > 59 || ss > 59) return null;
     const ms = Date.UTC(y, mo - 1, d);
     const check = new Date(ms);
     if (check.getUTCDate() !== d) return null; // e.g. 31/02/2025
-    return { day: Math.round(ms / DAY_MS), minute: hh * 60 + mi };
+    return { day: Math.round(ms / DAY_MS), second: hh * 3600 + mi * 60 + ss, fmt };
   }
 
   /** Amount is integer cents. Accepts an optional sign and thousands commas.
@@ -178,7 +187,7 @@
 
     const q = {
       totalDataRows: 0, parsed: 0, blankLines: 0,
-      badDate: [], badAmount: [], shortRows: [], unknownStatus: [],
+      badDate: [], badAmount: [], shortRows: [], unknownStatus: [], dateFormats: {},
       blankCustomer: 0, blankStatus: 0, suffixedFailed: 0,
       negative: [], zero: [], currencies: {}, cardTypes: {},
       columns: Object.fromEntries(Object.entries(found).map(([k, i]) => [k, header[i]])),
@@ -198,7 +207,7 @@
         continue;
       }
       const rawDate = cells[found.date];
-      const dt = parseDayFirst(rawDate);
+      const dt = parseDate(rawDate);
       if (!dt) { sample(q.badDate, { line, value: rawDate }); continue; }
       const rawAmt = cells[found.amount];
       const cents = parseCents(rawAmt);
@@ -217,7 +226,7 @@
       q.cardTypes[card] = (q.cardTypes[card] || 0) + 1;
 
       const row = {
-        line, day: dt.day, minute: dt.minute, customer, oneTime,
+        line, day: dt.day, second: dt.second, customer, oneTime,
         cents, currency, card, status: st.status,
         reason: st.status === 'Failed' ? st.reason : '',
         voidNote: found.voidNote !== undefined ? (cells[found.voidNote] || '').trim() : '',
@@ -226,13 +235,14 @@
       if (cents === 0) sample(q.zero, row);
       out.push(row);
       q.parsed++;
+      q.dateFormats[dt.fmt] = (q.dateFormats[dt.fmt] || 0) + 1;
     }
 
     if (!q.totalDataRows) throw userError('The file has a header row but no transactions.');
     if (!out.length) {
       const first = q.badDate[0] || q.badAmount[0] || q.shortRows[0] || q.unknownStatus[0];
       let why = '';
-      if (q.badDate.length) why = 'Row on line ' + first.line + ' has date “' + first.value + '”, expected DD/MM/YYYY HH:MM.';
+      if (q.badDate.length) why = 'Row on line ' + first.line + ' has date “' + first.value + '”, expected DD/MM/YYYY HH:MM (day first) or YYYY-MM-DD HH:MM:SS.';
       else if (q.badAmount.length) why = 'Row on line ' + first.line + ' has amount “' + first.value + '”, expected whole cents (e.g. 263391 for $2,633.91).';
       else if (q.shortRows.length) why = 'Row on line ' + first.line + ' has only ' + first.got + ' fields; ' + first.need + ' expected.';
       else if (q.unknownStatus.length) why = 'Row on line ' + first.line + ' has status “' + first.value + '”, expected Batched, Failed or Voided.';
@@ -244,7 +254,7 @@
         describeFirstProblem(q));
     }
 
-    out.sort((a, b) => a.day - b.day || a.minute - b.minute || a.line - b.line);
+    out.sort((a, b) => a.day - b.day || a.second - b.second || a.line - b.line);
     return { rows: out, quality: q, meta: { header, fileName: opts.fileName || '' } };
   }
 
@@ -264,7 +274,7 @@
     return e;
   }
 
-  const api = { parseCSV, detectColumns, parseDayFirst, parseCents, normaliseStatus, parseTransactions, COLUMNS, ONE_TIME, DAY_MS };
+  const api = { parseCSV, detectColumns, parseDate, DATE_FORMATS, parseCents, normaliseStatus, parseTransactions, COLUMNS, ONE_TIME, DAY_MS };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.CCParse = api;
 })(typeof window !== 'undefined' ? window : globalThis);
