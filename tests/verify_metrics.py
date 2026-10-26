@@ -2,8 +2,8 @@
 """Independently recompute the dashboard's headline numbers with pandas and
 assert they match what the browser rendered.
 
-    node tests/e2e.mjs data.csv --out tests/output --name run
-    python3 tests/verify_metrics.py data.csv tests/output/run.json
+    node tests/e2e.mjs data.csv --out tests/output --name run [--groups groups.csv]
+    python3 tests/verify_metrics.py data.csv tests/output/run.json [--groups groups.csv]
 
 This is a separate implementation (pandas/numpy, not a port of metrics.js)
 of the rules in docs/csv-format.md. It checks exact cents, rates, top-5
@@ -31,7 +31,18 @@ ALIASES = {
 }
 
 
-def load(path: str) -> pd.DataFrame:
+def load_groups(path: str | None) -> dict[str, str]:
+    """Customer-groups file: "Customer Number" → "Group As" (read independently)."""
+    if not path:
+        return {}
+    g = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+    cols = {re.sub(r"[^a-z0-9]+", " ", c.lower()).strip(): c for c in g.columns}
+    src, dst = cols["customer number"], cols["group as"]
+    tidy = lambda s: s.str.strip().str.replace(r"\s+", " ", regex=True)
+    return {k: v for k, v in zip(tidy(g[src]), tidy(g[dst])) if k and v}
+
+
+def load(path: str, groups: dict[str, str] | None = None) -> pd.DataFrame:
     raw = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig", skip_blank_lines=True)
     norm = {re.sub(r"[^a-z0-9]", "", c.lower()): c for c in raw.columns}
     cols = {}
@@ -55,6 +66,8 @@ def load(path: str) -> pd.DataFrame:
     df["cents"] = df["cents"].astype(np.int64)
     df["cust"] = df["customer"].str.strip().str.replace(r"\s+", " ", regex=True).replace("", ONE_TIME)
     df["one_time"] = df["cust"] == ONE_TIME
+    if groups:  # several export names → one customer (never the one-time aggregate)
+        df.loc[~df.one_time, "cust"] = df.loc[~df.one_time, "cust"].map(lambda c: groups.get(c, c))
     df["card"] = df["card"].str.strip().str.upper().replace("", "UNKNOWN")
     df["day"] = df["ts"].dt.normalize()
     return df.sort_values(["ts", "order"]).reset_index(drop=True)
@@ -72,9 +85,9 @@ def money_text(cents: int) -> str:
     return f"${int(dollars):,}"
 
 
-def main(csv_path: str, json_path: str) -> int:
+def main(csv_path: str, json_path: str, groups_path: str | None = None) -> int:
     dash = json.load(open(json_path, encoding="utf-8"))["summary"]
-    df = load(csv_path)
+    df = load(csv_path, load_groups(groups_path))
     lo, hi = df["day"].min(), df["day"].max()
     span = (hi - lo).days + 1
     unit = dash["unit"]
@@ -197,7 +210,13 @@ def main(csv_path: str, json_path: str) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
+    args = sys.argv[1:]
+    groups = None
+    if "--groups" in args:
+        i = args.index("--groups")
+        groups = args[i + 1]
+        del args[i:i + 2]
+    if len(args) != 2:
         print(__doc__)
         sys.exit(2)
-    sys.exit(main(sys.argv[1], sys.argv[2]))
+    sys.exit(main(args[0], args[1], groups))

@@ -50,6 +50,10 @@ not bolted on:
   `data/` folder, with explicit exceptions only for the synthetic sample and test
   fixtures. The tests that check a real export write their results to a temporary
   folder outside the repo.
+- **Customer groups stay on your computer.** They are your customers' names, so they
+  are never part of this code. They are saved in the browser's local storage, and
+  optionally in a `customer-groups.csv` you export yourself (also covered by
+  `.gitignore`).
 
 ## Input format
 
@@ -65,6 +69,8 @@ are tolerated. If a required column is missing, the dashboard says which one.
 | `Currency` | currency | Usually CAD. Optional. |
 | `Card Type` | card type | VISA / MC / AMEX. |
 | `Status` | status | Batched (successful), Failed, Voided. |
+| `Cardholder's Name` | – | Optional. Only used to suggest customer groups. |
+| `Card Number` | – | Optional, already masked by the processor. Only the last 4 digits are read, to suggest customer groups. |
 
 The full contract (aliases, encodings, edge cases) is in
 [docs/csv-format.md](docs/csv-format.md).
@@ -92,6 +98,51 @@ The full contract (aliases, encodings, edge cases) is in
   revenue. Identical amounts on different dates are treated as normal repeat orders
   (customers order from a fixed order guide); only same-day, same-amount, both-successful
   rows are flagged as possible duplicates, and they are never removed automatically.
+
+### Failed and voided transactions
+
+| | Failed | Voided |
+|---|---|---|
+| **What it is** | A charge the bank declined. Exported with a blank status or as `Failed - Result [101] Message [Declined]` (or another message). | A charge an admin cancelled, often a `$1.00` card-on-file test with the comment "Test". |
+| **Revenue, transactions, average, customer rankings, trends, RFM, cadence, acquisition** | Never counted | Never counted |
+| **Success rate** | In the denominator: successful ÷ (successful + failed + voided). | In the denominator too, as the brief specified. The tile also shows the rate without voids. |
+| **Failure rate** (by customer, 10+ attempts; by card type) | Counted as failures | Counted as attempts, not failures |
+| **Decline reasons** | Grouped by the processor's message; a blank status shows as "Blank status" | – |
+| **Retry chains** | A failure followed by a later success for the same customer, amount and card type is *recovered*. The success is the only row counted as revenue. | Ignored |
+| **Own reporting** | Retry recovery rate tile, retry-chain panel (chains, attempts, days to recover, unrecovered amount) | Voided amount tile (an increase shows red), voided-transactions table with the void comment |
+| **Status filter "Successful only"** | Hidden | Hidden |
+
+Refunds (negative `Batched` amounts) are a third case. They are kept out of gross
+revenue, subtracted only in net revenue, and listed in the data-quality panel.
+
+### Customer groups
+
+The processor saves each card on file under its own customer name, so one business
+can appear as several customers. For example, a customer might appear under its own
+name, as `<name> OTO` for a one-time-only card, as `<name> 4242` named after a card
+ending, or as a parent company whose cardholder is the restaurant. Until those names
+are grouped, every chart, ranking and trend splits the customer. A customer who
+switches cards then looks like one account going quiet and a new one appearing.
+
+**Customer groups** (in the filter bar) fixes this:
+
+- **Suggestions from the export.** Two names are suggested as one customer when:
+  - one is the other plus a card tag: `OTO`, `One Time Only`, `Temp`, `V2`, or **the
+    last 4 digits of its own card**; or
+  - the cardholder name on one is the other's customer name.
+
+  Store numbers that aren't card endings (`Harbour Grill 7018`) and different locations
+  (`Copper Bistro Midtown` / `Copper Bistro Lakeshore`) are never suggested.
+- **You confirm.** Nothing is merged until you click *Group as one customer*. You
+  can rename the group, mark a suggestion *Not the same*, group any names by hand,
+  or ungroup later.
+- **Remembered.** Groups are saved in this browser and applied to every export you
+  open, including next year's. *Save groups file* / *Load groups file* move them to
+  another computer.
+- **Visible.** Grouped customers carry a "3 names" tag in tables, chart tooltips list
+  the names they combine, and the data-quality panel counts them.
+
+![Customer groups dialog](docs/screenshots/customer-groups.png)
 
 ## What's on the dashboard
 
@@ -174,6 +225,12 @@ here so it isn't hidden in the code.
   one row and the charts get taller.
 
 **Data and cleaning**
+- **Customer identity.** The brief treats `Customer Number` as the customer. In real
+  exports it's one label per card on file, so names are suggested for grouping and
+  only merged once you confirm (see *Customer groups*). Grouping happens before every
+  calculation. A failure on one of a customer's cards followed by a success on
+  another card of the same type, for the same amount, now counts as a recovered
+  retry. The one-time manual-charge aggregate is never grouped.
 - **Two date formats.** The brief specified `DD/MM/YYYY` (day first). Newer exports
   write `YYYY-MM-DD HH:MM:SS`, which is unambiguous because the year comes first,
   so both are accepted. Slash dates are still always day first; month-first dates
@@ -301,13 +358,14 @@ dependency.
 
 1. **Unit tests** for the tokenizer (quotes, commas, `\r\n`, BOM, newlines in
    fields), day-first dates, cents, status normalisation, column detection,
-   bucket boundaries, retry-chain sequencing and quartile scoring against pandas
-   output.
+   bucket boundaries, retry-chain sequencing, quartile scoring against pandas
+   output, and customer-group suggestions (card tags and endings suggested; store
+   numbers, locations and one-time charges not).
 2. **The built file in headless Chromium**, loaded from `file://` in an *offline*
    browser context. The test fails on any network request or console error, loads
    the CSV through the real file input, checks that all 8 tiles and every chart
-   rendered (or show a designed empty state), clicks every control and prints a
-   PDF.
+   rendered (or show a designed empty state), clicks every control (including
+   grouping and ungrouping customers) and prints a PDF.
 3. **Independent maths.** `verify_metrics.py` recomputes the figures in pandas and
    asserts they match the rendered dashboard: gross, net and refunds to the cent,
    transaction and attempt counts, success rates, top-5/top-10 concentration,

@@ -34,6 +34,8 @@ a letter or digit, so `Date & Time`, `date and time` and `DATE_TIME` all match.
 | `status` | yes | Status, Transaction Status, Result | See below. |
 | `currency` | no | Currency, Currency Code | Shown in the header; mixed currencies raise a warning. |
 | `void_comment` | no | Void Comment, Void Reason | Shown next to voided transactions (judgement call: not in the original brief). |
+| `cardholder` | no | Cardholder's Name, Cardholder Name, Name on Card | Only used to suggest customer groups. |
+| `card_number` | no | Card Number, Masked Card Number | Already masked by the processor (`45207100XXX6592`). Only the last 4 digits are kept, to suggest customer groups. |
 
 If a required column is missing, the dashboard stops and names the missing
 column(s), along with the columns it did find.
@@ -91,6 +93,33 @@ A failed charge is often re-attempted days later for the same amount.
 - Identical amounts on different dates with no failure between them are normal
   repeat orders (customers order against a fixed order guide) and are not
   flagged.
+
+## Customer groups
+
+`Customer Number` is one label per card on file, so one customer can have several.
+A groups mapping (`label → customer`) is applied to every row before any
+calculation; the one-time manual-charge aggregate is never mapped.
+
+Suggestions link two labels when:
+
+1. their names match ignoring case and punctuation, or one is the other plus a
+   trailing card tag: `OTO`, `One Time Only`, `One Time`, `Temp`, `V<n>`, or a
+   4-digit number **equal to the last 4 digits of that label's own card**. Other
+   numbers are store numbers and are kept; or
+2. the cardholder name on one label (with the same tags removed) is another
+   label's name.
+
+Linked labels form one suggestion. Its proposed name is the tag-free name that
+covers the most revenue. Suggestions are never applied automatically.
+
+Groups are stored in the browser's `localStorage` and can be exported or
+imported as a CSV:
+
+```csv
+Customer Number,Group As
+"Fig Deli OTO","Fig Deli"
+"Fig Deli 4242","Fig Deli"
+```
 
 ## Duplicates
 

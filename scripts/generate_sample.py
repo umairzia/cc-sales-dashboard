@@ -243,6 +243,33 @@ def add_quirks(rng: random.Random, txns: list[Txn], start: date, end: date) -> N
     rng.choice(batched).cardholder = "Rivera, Ana"
 
 
+def add_multi_card(rng: random.Random, txns: list[Txn], custs: list[Customer], start: date, end: date) -> dict[str, str]:
+    """One customer on several cards, the way real exports store them: each
+    card gets its own customer label. Returns the groups a user would confirm."""
+    span = (end - start).days
+    by_size = sorted(custs, key=lambda c: -c.base)
+    a, b = by_size[8], by_size[15]
+
+    def charges(label: str, card: str, last4: str, holder: str, n: int, lo: int, hi: int, base: float) -> None:
+        for _ in range(n):
+            d = start + timedelta(days=rng.randint(lo, hi))
+            d += timedelta(days=1) if d.weekday() == 6 else timedelta(0)
+            cents = int(round(base * rng.uniform(0.8, 1.2) * 100))
+            txns.append(Txn(at(rng, d), label, cents, card, "Batched" if rng.random() > 0.15 else "", holder, str(rng.randint(100, 999)), last4))
+
+    # a: a second card saved as "<name> OTO", and a third named after its own card ending.
+    ending = f"{rng.randint(1000, 9999)}"
+    charges(f"{a.name} OTO", "VISA", f"{rng.randint(0, 9999):04d}", rng.choice(PEOPLE), 9, int(span * 0.3), int(span * 0.7), a.base)
+    charges(f"{a.name} {ending}", "MC", ending, a.name, 6, int(span * 0.6), span, a.base)
+    # b: a parent company paying on its own card, linked only by the cardholder name.
+    charges("Harbourline Hospitality One Time Only", "AMEX", f"{rng.randint(0, 9999):04d}", b.name, 7, 30, span - 10, b.base * 1.1)
+    # Store numbers that are not card endings: two separate locations, never merged.
+    charges("Quarry Market 7012", "VISA", f"{rng.randint(0, 9999):04d}", "Quarry Market", 12, 0, span, 420)
+    charges("Quarry Market 7044", "VISA", f"{rng.randint(0, 9999):04d}", "Quarry Market", 10, 0, span, 380)
+    return {a.name: a.name, f"{a.name} OTO": a.name, f"{a.name} {ending}": a.name,
+            b.name: b.name, "Harbourline Hospitality One Time Only": b.name}
+
+
 def row(rng: random.Random, t: Txn) -> list[str]:
     r = dict.fromkeys(HEADER, "")
     r["Date & Time"] = t.when.strftime("%d/%m/%Y %H:%M")
@@ -289,12 +316,16 @@ def main_sample(out: Path) -> None:
     calibrate(custs, end, target_rows=2620)
     txns = simulate(rng, custs, start, end)
     add_quirks(rng, txns, start, end)
+    groups = add_multi_card(rng, txns, custs, start, end)
     write_csv(out, HEADER, export_rows(rng, txns))
+    write_csv(ROOT / "tests" / "fixtures" / "sample_customer_groups.csv", ["Customer Number", "Group As"],
+              [[k, v] for k, v in sorted(groups.items())], bom=False)
     blank = sum(1 for t in txns if t.status == "")
     cards = {k: sum(1 for t in txns if t.card == k) for k in CARD_PREFIX}
     decliners = [c.name for c in custs if c.trend <= -0.6]
     print(f"wrote {out.relative_to(ROOT)}: {len(txns)} rows, {len({t.customer for t in txns if t.customer})} customers, "
-          f"{blank} blank statuses ({blank / len(txns):.1%}), cards {cards}, deliberate decliners: {decliners}")
+          f"{blank} blank statuses ({blank / len(txns):.1%}), cards {cards}, deliberate decliners: {decliners}, "
+          f"multi-card customers: {sorted(set(groups.values()))}")
 
 
 def fixtures(dirpath: Path) -> None:

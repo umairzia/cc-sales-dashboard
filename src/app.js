@@ -3,14 +3,53 @@
 (function () {
   'use strict';
 
-  const P = window.CCParse, M = window.CCMetrics, C = window.CCCharts, F = window.CCFormat;
+  const P = window.CCParse, M = window.CCMetrics, C = window.CCCharts, F = window.CCFormat, G = window.CCGroups;
   const $ = (id) => document.getElementById(id);
 
   const state = {
     rows: null, quality: null, fileName: '', fileSize: 0,
     from: null, to: null, preset: 'all', unit: 'auto', status: 'all', threshold: 0.25,
     slopesAll: false, cadenceAll: false, segment: null, analysis: null,
+    // Customer groups: { "label in export": "customer it belongs to" }, kept in this browser.
+    groups: {}, dismissed: [], storeOk: true,
+    mapped: null, profiles: new Map(), suggestions: [], members: new Map(),
   };
+
+  // ---------------------------------------------------------------------------
+  // Customer groups: persistence (this browser only) and application
+  // ---------------------------------------------------------------------------
+  const STORE_KEY = 'ccdash.customerGroups.v1';
+  function loadStore() {
+    try {
+      const v = JSON.parse(window.localStorage.getItem(STORE_KEY) || 'null');
+      if (v && v.groups && typeof v.groups === 'object') { state.groups = v.groups; state.dismissed = Array.isArray(v.dismissed) ? v.dismissed : []; }
+    } catch (e) { state.storeOk = false; }
+  }
+  function saveStore() {
+    try { window.localStorage.setItem(STORE_KEY, JSON.stringify({ groups: state.groups, dismissed: state.dismissed })); state.storeOk = true; }
+    catch (e) { state.storeOk = false; }
+  }
+  const resolve = (label) => state.groups[label] || label;
+  const sugKey = (s) => s.members.slice().sort().join('\u0000');
+
+  /** Recompute grouped rows, suggestions and group membership for the loaded file. */
+  function refreshGroups() {
+    if (!state.rows) return;
+    state.profiles = G.profiles(state.rows);
+    state.suggestions = G.suggestGroups(state.rows);
+    state.mapped = G.applyGroups(state.rows, state.groups);
+    state.members = new Map();
+    for (const label of state.profiles.keys()) {
+      const g = resolve(label);
+      if (g === label && !Object.values(state.groups).includes(label)) continue;
+      if (!state.members.has(g)) state.members.set(g, []);
+      state.members.get(g).push(label);
+    }
+    for (const [g, list] of state.members) if (list.length === 1 && list[0] === g) state.members.delete(g);
+  }
+  function pendingSuggestions() {
+    return state.suggestions.filter((s) => !state.dismissed.includes(sugKey(s)) && new Set(s.members.map(resolve)).size > 1);
+  }
 
   // ---------------------------------------------------------------------------
   // DOM helpers
@@ -28,7 +67,12 @@
     return n;
   }
   const clear = (node) => { while (node.firstChild) node.removeChild(node.firstChild); return node; };
-  const nameCell = (name, oneTime) => [name, oneTime ? el('span', { class: 'tag agg', title: 'Not a customer: an aggregate of unrelated cards keyed in once', text: 'aggregate †' }) : null];
+  const nameCell = (name, oneTime) => {
+    const mem = state.members.get(name);
+    return [name,
+      oneTime ? el('span', { class: 'tag agg', title: 'Not a customer: an aggregate of unrelated cards keyed in once', text: 'aggregate †' }) : null,
+      mem ? el('span', { class: 'tag grp', title: 'One customer, shown under these names in the export: ' + mem.join(' + '), text: mem.length > 1 ? mem.length + ' names' : 'grouped' }) : null];
+  };
 
   /** Sortable table. columns: {key,label,num,fmt(row)→string|Node[],sort(row)→value} */
   function table(columns, rows, opts) {
@@ -100,6 +144,7 @@
       rows: parsed.rows, quality: parsed.quality, fileName: file.name, fileSize: file.size,
       preset: 'all', unit: 'auto', status: 'all', segment: null, slopesAll: false, cadenceAll: false,
     });
+    refreshGroups();
     const dMin = parsed.rows[0].day, dMax = parsed.rows[parsed.rows.length - 1].day;
     state.from = dMin; state.to = dMax;
     const t0 = M.ymd(dMin), t1 = M.ymd(dMax);
@@ -135,7 +180,7 @@
   // Render pipeline
   // ---------------------------------------------------------------------------
   function analyse() {
-    state.analysis = M.analyse(state.rows, { from: state.from, to: state.to, unit: state.unit, status: state.status, threshold: state.threshold });
+    state.analysis = M.analyse(state.mapped || state.rows, { from: state.from, to: state.to, unit: state.unit, status: state.status, threshold: state.threshold });
     return state.analysis;
   }
 
@@ -169,6 +214,7 @@
     renderAcquisition(a, t);
     renderRisk(a, t);
     renderDQ(a);
+    updateGroupsBadge();
     $('footerMeta').textContent = 'Card Sales Dashboard · analysed ' + new Date().toLocaleString() + ' · ' + F.int(a.rowsInScope) + ' rows in view · works offline · MIT licence';
   }
 
@@ -193,13 +239,20 @@
     $('printSummary').textContent = state.fileName + ' · ' + fmtDay(a.from) + ' – ' + fmtDay(a.to) + ' · grouped by ' + (a.unit || '') + ' · ' + statusText + ' · printed ' + new Date().toLocaleDateString();
   }
 
-  function notice(kind, text) {
-    return el('div', { class: 'notice ' + kind }, el('span', { class: 'ico', text: kind === 'warn' ? '⚠' : 'ℹ' }), el('span', null, text));
+  function notice(kind, text, action) {
+    return el('div', { class: 'notice ' + kind }, el('span', { class: 'ico', text: kind === 'warn' ? '⚠' : 'ℹ' }), el('span', null, text),
+      action ? el('button', { type: 'button', class: 'btn small', onclick: action.onclick }, action.label) : null);
   }
 
   function renderNotices(a) {
     const box = clear($('notices'));
     const q = state.quality;
+    const pend = pendingSuggestions();
+    if (pend.length) {
+      const eg = pend.slice(0, 3).map((x) => x.name + ' ×' + x.members.length).join(', ');
+      box.append(notice('info', plural(pend.length, 'set') + ' of customer names look like one customer on several cards (' + eg + (pend.length > 3 ? ', …' : '') + '). Until they are grouped, each name counts as a separate customer.',
+        { label: 'Review customer groups', onclick: openGroups }));
+    }
     const cur = Object.keys(q.currencies);
     if (cur.length > 1) box.append(notice('warn', 'This file mixes currencies (' + cur.map((c) => c + ': ' + q.currencies[c]).join(', ') + '). Amounts are added together as-is, so totals mix currencies. Filter the export to one currency for accurate figures.'));
     const rejected = q.totalDataRows - q.parsed;
@@ -335,7 +388,7 @@
     } else {
       $('s-quiet').textContent = 'No successful charge in ' + mo.quietLabels.join(' or ') + ' (or since), after at least 2 charges before that · biggest accounts first';
       qbox.append(table([
-        { key: 'name', label: 'Customer', name: true },
+        { key: 'name', label: 'Customer', name: true, fmt: (r) => nameCell(r.name) },
         { key: 'gross', label: 'Lifetime revenue', num: true, fmt: (r) => F.money(r.gross) },
         { key: 'count', label: 'Charges', num: true },
         { key: 'lastDay', label: 'Last charge', num: true, fmt: (r) => fmtDay(r.lastDay) },
@@ -359,7 +412,7 @@
     const range = (arr) => arr[0] + '–' + arr[arr.length - 1];
     $('s-attention').textContent = 'Recent = average revenue per ' + n + ' in ' + range(w.recent) + '; baseline = ' + range(w.base) + '. Listed when recent is at least ' + Math.round(state.threshold * 100) + '% below baseline.';
     box.append(table([
-      { key: 'name', label: 'Customer', name: true },
+      { key: 'name', label: 'Customer', name: true, fmt: (r) => nameCell(r.name) },
       { key: 'baseAvg', label: 'Baseline', num: true, fmt: (r) => F.money(r.baseAvg) },
       { key: 'recentAvg', label: 'Recent', num: true, fmt: (r) => F.money(r.recentAvg) },
       { key: 'change', label: 'Change', num: true, fmt: (r) => el('span', { class: 'neg', text: '▼ ' + F.signedPct(r.change, 0) }) },
@@ -442,7 +495,7 @@
     }
     const dt = clear($('tbl-drifting'));
     dt.append(table([
-      { key: 'name', label: 'Customer', name: true },
+      { key: 'name', label: 'Customer', name: true, fmt: (r) => nameCell(r.name) },
       { key: 'avgGap', label: 'Usual gap', num: true, fmt: (r) => r.avgGap.toFixed(1) + ' days' },
       { key: 'since', label: 'Days since last charge', num: true, fmt: (r) => F.int(r.since) },
       { key: 'ratio', label: '× usual gap', num: true, fmt: (r) => el('span', { class: 'neg', text: r.ratio.toFixed(1) + '×' }) },
@@ -487,7 +540,7 @@
     const members = a.rfm.members.filter((m) => !state.segment || m.segment === state.segment);
     $('t-rfmTable').textContent = state.segment ? state.segment + ' customers' : 'All segmented customers';
     tbl.append(table([
-      { key: 'name', label: 'Customer', name: true },
+      { key: 'name', label: 'Customer', name: true, fmt: (r) => nameCell(r.name) },
       { key: 'segment', label: 'Segment', fmt: (r) => [el('span', { class: 'seg-dot', style: 'background:' + colors[M.SEGMENTS.indexOf(r.segment)] }), r.segment], sort: (r) => M.SEGMENTS.indexOf(r.segment) },
       { key: 'recency', label: 'Recency (days)', num: true },
       { key: 'frequency', label: 'Frequency', num: true },
@@ -617,6 +670,11 @@
     if (q.badAmount.length) add('warn', 'Rows with unreadable amounts', F.int(q.badAmount.length), 'Excluded. Amount must be whole cents. ' + sampleLines(q.badAmount, (r) => 'line ' + r.line + ': “' + r.value + '”'));
     if (q.shortRows.length) add('warn', 'Rows with too few fields', F.int(q.shortRows.length), 'Excluded. ' + sampleLines(q.shortRows, (r) => 'line ' + r.line + ' (' + r.got + ' fields)'));
     if (q.unknownStatus.length) add('warn', 'Unrecognised status values', F.int(q.unknownStatus.length), 'Excluded. ' + sampleLines(q.unknownStatus, (r) => 'line ' + r.line + ': “' + r.value + '”'));
+    const grouped = [...state.members.values()].reduce((n, l) => n + l.length, 0);
+    const pendN = pendingSuggestions().length;
+    add(pendN ? 'warn' : 'info', 'Customer names grouped', grouped ? F.int(grouped) + ' → ' + F.int(state.members.size) : '0',
+      (grouped ? 'Your customer groups combine ' + F.int(grouped) + ' export names into ' + plural(state.members.size, 'customer') + '. ' : '') +
+      (pendN ? plural(pendN, 'suggested group') + ' waiting for review under Customer groups.' : grouped ? '' : 'Each name in the export is treated as its own customer.'));
     add('info', 'Blank customer names relabelled', F.int(q.blankCustomer), 'Shown as “One-Time Manual Charge”: cards keyed in once, treated as one aggregate pseudo-customer');
     add('info', 'Blank statuses relabelled', F.int(q.blankStatus), 'Blank status = an unsuccessful attempt → Failed');
     if (q.suffixedFailed) add('info', '“Failed – Result …” statuses', F.int(q.suffixedFailed), 'Normalised to Failed; the processor message is kept as the failure reason');
@@ -659,7 +717,7 @@
       body.append(el('h4', { text: 'Same-day exact duplicates (in the selected period)' }));
       body.append(table([
         { key: 'day', label: 'Date', fmt: (r) => fmtDay(r.day) },
-        { key: 'customer', label: 'Customer', name: true },
+        { key: 'customer', label: 'Customer', name: true, fmt: (r) => nameCell(r.customer) },
         { key: 'cents', label: 'Amount', num: true, fmt: (r) => F.money(r.cents / 100, 2) },
         { key: 'card', label: 'Card' },
         { key: 'rows', label: 'Rows', num: true },
@@ -791,11 +849,173 @@
         rfmSegments: a.rfm ? Object.fromEntries(a.rfm.segments.map((s) => [s.name, s.count])) : null,
         attention: a.momentum.attention.map((x) => x.name), quiet: a.momentum.quiet.map((x) => x.name),
         duplicates: a.duplicates.length,
+        groups: { namesGrouped: [...state.members.values()].reduce((n, l) => n + l.length, 0), customers: state.members.size, pending: pendingSuggestions().length, suggested: state.suggestions.map((x) => ({ name: x.name, members: x.members })) },
         quality: { parsed: state.quality.parsed, total: state.quality.totalDataRows, blankCustomer: state.quality.blankCustomer, blankStatus: state.quality.blankStatus, negative: state.quality.negative.length, zero: state.quality.zero.length, badDate: state.quality.badDate.length },
         kpiText: Array.from(document.querySelectorAll('.kpi')).map((k) => ({ key: k.dataset.kpi, value: k.querySelector('.kpi-value').textContent, delta: k.querySelector('.kpi-delta').textContent })),
       };
     },
   };
 
+  // ---------------------------------------------------------------------------
+  // Customer groups dialog
+  // ---------------------------------------------------------------------------
+  const cents$ = (c) => F.money(c / 100);
+  function memberRow(label, onRemove) {
+    const p = state.profiles.get(label);
+    const kids = p
+      ? [el('span', { class: 'nm', text: label }), el('span', { class: 'num', text: cents$(p.gross) }),
+        el('span', { class: 'mut', text: [...p.cards.keys()].join(', ') || '—' }),
+        el('span', { class: 'mut', text: p.holders.size ? 'Cardholder: ' + [...p.holders].slice(0, 2).join(', ') : '' })]
+      : [el('span', { class: 'nm', text: label }), el('span', { class: 'num mut', text: '—' }), el('span', { class: 'mut', text: 'not in this file' }), el('span')];
+    kids.push(onRemove ? el('button', { type: 'button', class: 'x', title: 'Remove “' + label + '” from this group', 'aria-label': 'Remove ' + label, onclick: onRemove, text: '×' }) : el('span'));
+    return el('div', { class: 'grp-member' }, kids);
+  }
+
+  function commitGroups(note) {
+    saveStore();
+    refreshGroups();
+    if (state.rows) render();
+    renderGroupsDialog();
+    if (note) $('grpNote').textContent = note;
+  }
+  function groupAs(name, labels) {
+    name = (name || '').trim().replace(/\s+/g, ' ') || labels[0];
+    labels.forEach((l) => { state.groups[l] = name; });
+    commitGroups('Grouped ' + labels.length + ' names as “' + name + '”.');
+  }
+  function groupsByName() {
+    const out = new Map();
+    for (const [label, g] of Object.entries(state.groups)) { if (!out.has(g)) out.set(g, []); out.get(g).push(label); }
+    for (const [g, list] of out) if (list.length === 1 && list[0] === g) out.delete(g);
+    return out;
+  }
+
+  function renderGroupsDialog() {
+    const sug = clear($('grpSuggested')), act = clear($('grpActive')), man = clear($('grpManual'));
+    if (!state.rows) {
+      sug.append(el('h3', { text: 'Suggested' }), el('p', { class: 'grp-empty', text: 'Load an export to see suggestions.' }));
+    } else {
+      const pend = pendingSuggestions();
+      sug.append(el('h3', null, 'Suggested (' + pend.length + ')', pend.length > 1 ? el('button', { type: 'button', class: 'btn small', onclick: () => {
+        pend.forEach((x, i) => {
+          const v = (($('grpSugName' + i) || {}).value || '').trim().replace(/\s+/g, ' ') || x.name;
+          x.members.forEach((l) => { state.groups[l] = v; });
+        });
+        commitGroups('Grouped ' + pend.length + ' suggestions.');
+      } }, 'Group all suggestions') : null));
+      if (!pend.length) sug.append(el('p', { class: 'grp-empty', text: state.suggestions.length ? 'Every suggestion for this file has been grouped or dismissed.' : 'No names in this file look like the same customer on several cards.' }));
+      pend.forEach((x, i) => {
+        const input = el('input', { type: 'text', value: x.name, 'aria-label': 'Customer name for this group', id: 'grpSugName' + i });
+        sug.append(el('div', { class: 'grp-card suggested' },
+          el('div', { class: 'grp-row' }, input, el('span', { class: 'spacer' }),
+            el('button', { type: 'button', class: 'btn primary small', onclick: () => groupAs(input.value, x.members) }, 'Group as one customer'),
+            el('button', { type: 'button', class: 'btn small', title: 'Keep these as separate customers and stop suggesting it', onclick: () => { state.dismissed.push(sugKey(x)); commitGroups('Kept separate.'); } }, 'Not the same')),
+          el('div', { class: 'grp-members' }, x.members.map((l) => memberRow(l))),
+          el('ul', { class: 'grp-reasons' }, x.reasons.map((r) => el('li', { text: r })))));
+      });
+      if (state.dismissed.length) sug.append(el('p', { class: 'grp-empty' }, plural(state.dismissed.length, 'suggestion') + ' marked “not the same”. ',
+        el('button', { type: 'button', class: 'btn small', onclick: () => { state.dismissed = []; commitGroups('Dismissed suggestions restored.'); } }, 'Show them again')));
+    }
+
+    const groups = [...groupsByName()].sort((a, b) => a[0] < b[0] ? -1 : 1);
+    act.append(el('h3', { text: 'Your groups (' + groups.length + ')' }));
+    if (!groups.length) act.append(el('p', { class: 'grp-empty', text: 'No groups yet. Accept a suggestion above or pick names below.' }));
+    groups.forEach(([g, labels]) => {
+      const input = el('input', { type: 'text', value: g, 'aria-label': 'Rename group ' + g });
+      input.addEventListener('change', () => {
+        const nv = input.value.trim().replace(/\s+/g, ' ');
+        if (!nv || nv === g) { input.value = g; return; }
+        for (const k of Object.keys(state.groups)) if (state.groups[k] === g) state.groups[k] = nv;
+        commitGroups('Renamed to “' + nv + '”.');
+      });
+      const inFile = labels.filter((l) => state.profiles.has(l)).length;
+      act.append(el('div', { class: 'grp-card' },
+        el('div', { class: 'grp-row' }, input, el('span', { class: 'spacer' }),
+          el('span', { class: 'mut', text: state.rows ? inFile + ' of ' + labels.length + ' names in this file' : plural(labels.length, 'name') }),
+          el('button', { type: 'button', class: 'btn small', onclick: () => { labels.forEach((l) => delete state.groups[l]); commitGroups('Ungrouped “' + g + '”.'); } }, 'Ungroup')),
+        el('div', { class: 'grp-members' }, labels.sort().map((l) => memberRow(l, () => {
+          delete state.groups[l];
+          const left = Object.keys(state.groups).filter((k) => state.groups[k] === g);
+          if (left.length === 1 && left[0] === g) delete state.groups[g];
+          commitGroups('Removed “' + l + '”.');
+        })))));
+    });
+
+    if (state.rows) {
+      man.append(el('h3', { text: 'Group names yourself' }));
+      const search = el('input', { type: 'search', placeholder: 'Filter customer names…', 'aria-label': 'Filter customer names' });
+      const nameIn = el('input', { type: 'text', placeholder: 'Customer name for the group', 'aria-label': 'Name for the new group' });
+      const pick = el('div', { class: 'grp-pick' });
+      const labels = [...state.profiles.keys()].sort((a, b) => a.localeCompare(b));
+      const boxes = new Map();
+      labels.forEach((l) => {
+        const p = state.profiles.get(l);
+        const cb = el('input', { type: 'checkbox', value: l });
+        boxes.set(l, cb);
+        pick.append(el('label', null, cb, el('span', { text: l }), el('span', { class: 'num', text: cents$(p.gross) }),
+          el('span', { class: 'mut', text: [...p.cards.keys()].join(', ') }), el('span', { class: 'mut', text: resolve(l) !== l ? 'in “' + resolve(l) + '”' : '' })));
+      });
+      search.addEventListener('input', () => {
+        const q = search.value.trim().toLowerCase();
+        for (const [l, cb] of boxes) cb.parentElement.hidden = q && !l.toLowerCase().includes(q);
+      });
+      pick.addEventListener('change', () => {
+        const chosen = labels.filter((l) => boxes.get(l).checked);
+        if (chosen.length && !nameIn.dataset.touched) nameIn.value = chosen.slice().sort((a, b) => state.profiles.get(b).gross - state.profiles.get(a).gross)[0];
+      });
+      nameIn.addEventListener('input', () => { nameIn.dataset.touched = '1'; });
+      man.append(el('div', { class: 'grp-row' }, search, el('span', { class: 'spacer' }), nameIn,
+        el('button', { type: 'button', class: 'btn primary small', onclick: () => {
+          const chosen = labels.filter((l) => boxes.get(l).checked);
+          if (chosen.length < 1) { $('grpNote').textContent = 'Tick the names that belong to one customer first.'; return; }
+          groupAs(nameIn.value, chosen);
+        } }, 'Group selected')), pick);
+    }
+    $('grpNote').textContent = state.storeOk ? 'Saved in this browser only. Use “Save groups file” to keep a copy or use them on another computer.'
+      : 'This browser is not allowing pages opened from disk to save settings, so groups last until the tab closes. Use “Save groups file” to keep them.';
+    $('grpClear').disabled = !Object.keys(state.groups).length;
+    updateGroupsBadge();
+  }
+
+  function updateGroupsBadge() {
+    const b = $('groupsBadge');
+    const pend = state.rows ? pendingSuggestions().length : 0;
+    b.hidden = !pend && !state.members.size;
+    b.className = 'badge' + (pend ? ' warn' : '');
+    b.textContent = pend ? pend + ' to review' : String(state.members.size);
+    b.title = pend ? plural(pend, 'suggested group') + ' to review' : plural(state.members.size, 'grouped customer') + ' in this file';
+  }
+  function openGroups() { renderGroupsDialog(); $('groupsDialog').showModal(); }
+
+  function bindGroups() {
+    $('groupsBtn').addEventListener('click', openGroups);
+    $('groupsClose').addEventListener('click', () => $('groupsDialog').close());
+    $('grpSave').addEventListener('click', () => {
+      const blob = new Blob([G.toCSV(state.groups)], { type: 'text/csv' });
+      const a = el('a', { href: URL.createObjectURL(blob), download: 'customer-groups.csv' });
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      $('grpNote').textContent = 'Saved customer-groups.csv. Keep it out of shared folders: it contains customer names.';
+    });
+    $('grpLoadInput').addEventListener('change', async (e) => {
+      const f = e.target.files[0];
+      e.target.value = '';
+      if (!f) return;
+      try {
+        const mapping = G.fromCSV(await f.text(), P.parseCSV);
+        Object.assign(state.groups, mapping);
+        commitGroups('Loaded ' + plural(Object.keys(mapping).length, 'name') + ' from ' + f.name + '.');
+      } catch (err) { $('grpNote').textContent = err.message; }
+    });
+    $('grpClear').addEventListener('click', () => {
+      if (!window.confirm('Remove all customer groups saved in this browser? Every export name will count as its own customer again.')) return;
+      state.groups = {};
+      commitGroups('All groups removed.');
+    });
+    C.setNameNote((name) => { const m = state.members.get(name); return m ? 'Combines: ' + m.join(' + ') : null; });
+  }
+
+  loadStore();
+  bindGroups();
   bind();
 })();

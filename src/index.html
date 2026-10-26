@@ -113,6 +113,7 @@
         </select>
       </div>
       <div class="filters-spacer"></div>
+      <button type="button" class="btn" id="groupsBtn" aria-haspopup="dialog">Customer groups<span class="badge" id="groupsBadge" hidden></span></button>
       <button type="button" class="btn" id="printBtn">Print / PDF</button>
     </div>
     <p class="print-summary" id="printSummary"></p>
@@ -308,9 +309,33 @@
 
 <div class="drop-overlay" id="dropOverlay" hidden><div>Drop the CSV to analyse it</div></div>
 
+<!-- Customer groups: combine names that are one customer on several cards -->
+<dialog class="dialog" id="groupsDialog" aria-labelledby="groupsTitle">
+  <div class="dialog-head">
+    <div>
+      <h2 id="groupsTitle">Customer groups</h2>
+      <p class="card-sub">The processor saves each card on file under its own customer name, so one customer can appear several times (for example “Fig Deli”, “Fig Deli OTO” and “Fig Deli 4242”). Group those names and the whole dashboard treats them as one customer. Groups are kept in this browser and applied to every export you open.</p>
+    </div>
+    <button type="button" class="btn primary" id="groupsClose">Done</button>
+  </div>
+  <div class="dialog-body">
+    <section class="grp-section" id="grpSuggested"></section>
+    <section class="grp-section" id="grpActive"></section>
+    <section class="grp-section" id="grpManual"></section>
+  </div>
+  <div class="dialog-foot">
+    <button type="button" class="btn" id="grpSave">Save groups file…</button>
+    <label class="btn" for="grpLoadInput" tabindex="0">Load groups file…</label>
+    <input type="file" id="grpLoadInput" class="visually-hidden" accept=".csv,text/csv">
+    <button type="button" class="btn danger" id="grpClear">Remove all groups</button>
+    <span class="dialog-note" id="grpNote" role="status"></span>
+  </div>
+</dialog>
+
 <script src="../vendor/chart.umd.min.js"></script>
 <script src="parse.js"></script>
 <script src="metrics.js"></script>
+<script src="groups.js"></script>
 <script src="charts.js"></script>
 <script src="app.js"></script>
 </body>

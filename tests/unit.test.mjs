@@ -6,6 +6,8 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const P = require('../src/parse.js');
 const M = require('../src/metrics.js');
+const G = require('../src/groups.js');
+const fs = require('node:fs');
 
 const iso = (day) => M.isoDate(day);
 const HDR = 'Date & Time,Customer Number,Amount,Currency,Card Type,Status';
@@ -182,4 +184,49 @@ test('revenue uses Batched only; refunds separate; one-time charge is not a name
   assert.equal(a.totals.voidCents, 7000);
   assert.equal(a.top15.find((c) => c.oneTime).name, P.ONE_TIME);
   assert.equal(a.pareto[a.pareto.length - 1].oneTime, true); // aggregate placed last
+});
+
+test('customer groups: card tags, own card endings and cardholder links are suggested; locations and store numbers are not', () => {
+  const r = (customer, last4, cardholder, cents = 10000, status = 'Batched', card = 'VISA') => ({ day: 1, second: 0, line: 1, customer, oneTime: false, cents, card, status, last4, cardholder });
+  assert.deepEqual(G.cardTagBase('Fig Deli OTO', new Set()).base, 'fig deli');
+  assert.deepEqual(G.cardTagBase('Northwind OTO V2', new Set()).base, 'northwind');
+  assert.deepEqual(G.cardTagBase('Saffron Temp', new Set()).base, 'saffron');
+  assert.deepEqual(G.cardTagBase('Fig Deli 4242', new Set(['4242'])).base, 'fig deli');
+  assert.deepEqual(G.cardTagBase('Harbour Grill 7018', new Set(['1234'])).base, 'harbour grill 7018'); // store number, not the card
+  assert.equal(G.cardLast4('45207100XXX6592'), '6592');
+
+  const rows = [
+    r('Fig Deli', '1111', 'Ana Rivera', 90000), r('Fig Deli OTO', '2222', 'J. Okafor'), r('Fig Deli 4242', '4242', 'Fig Deli'),
+    r('Cedar Grill', '3333', 'M. Chen', 50000), r('Northwind Group One Time Only', '5555', 'Cedar Grill'),
+    r('Copper Bistro Midtown', '6666', 'S. Patel'), r('Copper Bistro Lakeshore', '7777', 'S. Patel'),       // two locations
+    r('Harbour Grill 7018', '8888', 'Harbour Grill'), r('Harbour Grill 7061', '9999', 'Harbour Grill'),               // store numbers
+    Object.assign(r('', '0000', 'Fig Deli'), { customer: P.ONE_TIME, oneTime: true }),        // one-time: never grouped
+  ];
+  const sug = G.suggestGroups(rows);
+  assert.deepEqual(sug.map((s) => [s.name, s.members.slice().sort()]), [
+    ['Fig Deli', ['Fig Deli', 'Fig Deli 4242', 'Fig Deli OTO']],
+    ['Cedar Grill', ['Cedar Grill', 'Northwind Group One Time Only']],
+  ]);
+  assert.ok(sug[1].reasons.some((x) => /cardholder on “Northwind Group One Time Only” is “Cedar Grill”/.test(x)));
+
+  // Applying groups: one customer, original label kept; retries now chain across the customer's labels.
+  const mapping = { 'Fig Deli OTO': 'Fig Deli', 'Fig Deli 4242': 'Fig Deli' };
+  const g = G.applyGroups([r('Fig Deli OTO', '2222', '', 5000, 'Failed'), r('Fig Deli 4242', '4242', '', 5000, 'Batched'), rows[9]], mapping);
+  assert.deepEqual(g.map((x) => [x.customer, x.alias || null]), [['Fig Deli', 'Fig Deli OTO'], ['Fig Deli', 'Fig Deli 4242'], [P.ONE_TIME, null]]);
+  assert.equal(M.retryChains(g).chains.length, 1);
+});
+
+test('groups file round-trips through CSV, including commas and quotes', () => {
+  const mapping = { 'Fig Deli OTO': 'Fig Deli', 'Smith, J "Temp"': 'Fig Deli', 'Cedar Grill': 'Cedar Grill' };
+  assert.deepEqual(G.fromCSV(G.toCSV(mapping), P.parseCSV), mapping);
+  assert.deepEqual(G.fromCSV('customer,group\nA OTO,A\n,\n', P.parseCSV), { 'A OTO': 'A' });
+  assert.throws(() => G.fromCSV('name,amount\nA,1', P.parseCSV), /Customer Number.*Group As/);
+});
+
+test('the synthetic sample suggests exactly its two multi-card customers', () => {
+  const { rows } = P.parseTransactions(fs.readFileSync(new URL('../sample-data/sample_transactions.csv', import.meta.url), 'utf8'));
+  const want = G.fromCSV(fs.readFileSync(new URL('./fixtures/sample_customer_groups.csv', import.meta.url), 'utf8'), P.parseCSV);
+  const got = {};
+  for (const s of G.suggestGroups(rows)) for (const m of s.members) got[m] = s.name;
+  assert.deepEqual(got, want);
 });

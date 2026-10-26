@@ -5,6 +5,7 @@
 #   tests/run_all.sh                     # synthetic data only
 #   tests/run_all.sh a.csv [b.csv ...]   # also check real exports (results go
 #                                        # to a temp dir outside the repo)
+#   GROUPS_FILE=groups.csv tests/run_all.sh a.csv   # …and again with customer groups
 # Needs: python3 + pandas + numpy, node + playwright (Chromium).
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -28,6 +29,8 @@ grep -q "connect-src 'none'" dashboard.html && echo "PASS  Content-Security-Poli
 step "Browser: synthetic 12-month sample (file://, offline, every control exercised, PDF)"
 run node tests/e2e.mjs sample-data/sample_transactions.csv --out "$OUT" --name sample --expect-unit month --interact --pdf
 run python3 tests/verify_metrics.py sample-data/sample_transactions.csv "$OUT/sample.json"
+run node tests/e2e.mjs sample-data/sample_transactions.csv --out "$OUT" --name sample_grouped --groups tests/fixtures/sample_customer_groups.csv
+run python3 tests/verify_metrics.py sample-data/sample_transactions.csv "$OUT/sample_grouped.json" --groups tests/fixtures/sample_customer_groups.csv
 
 step "Browser: edge cases"
 run node tests/e2e.mjs tests/fixtures/span_90_days.csv --out "$OUT" --expect-unit week --interact
@@ -44,11 +47,17 @@ run node tests/e2e.mjs tests/fixtures/us_dates.csv --out "$OUT" --expect-error "
 run node tests/e2e.mjs tests/fixtures/not_a_csv.csv --out "$OUT" --expect-error "does not look like a CSV"
 
 REAL=$(mktemp -d)
+GROUPS_ARGS=()
+[ -n "${GROUPS_FILE:-}" ] && GROUPS_ARGS=(--groups "$GROUPS_FILE")
 for f in "$@"; do
   step "Browser + pandas: $(basename "$f") (results kept outside the repo)"
   n=$(basename "$f" .csv)
   run node tests/e2e.mjs "$f" --out "$REAL" --name "$n" --interact
   run python3 tests/verify_metrics.py "$f" "$REAL/$n.json"
+  if [ ${#GROUPS_ARGS[@]} -gt 0 ]; then
+    run node tests/e2e.mjs "$f" --out "$REAL" --name "$n.grouped" "${GROUPS_ARGS[@]}"
+    run python3 tests/verify_metrics.py "$f" "$REAL/$n.grouped.json" "${GROUPS_ARGS[@]}"
+  fi
 done
 [ "$#" -gt 0 ] && echo "   results: $REAL" || rmdir "$REAL"
 

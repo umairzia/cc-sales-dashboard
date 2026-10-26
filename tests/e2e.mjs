@@ -50,6 +50,8 @@ if (!url.startsWith('file://')) fail('not loaded from file://');
 if ((await page.getAttribute('#app', 'data-state')) !== 'empty') fail('initial state is not the empty state');
 if (flag('--screenshot') && flag('--empty-shot')) await page.screenshot({ path: resolve(out, name + '-empty.png'), fullPage: true });
 
+// Optional customer-groups file, loaded through the dialog's real file input.
+if (opt('--groups')) await page.setInputFiles('#grpLoadInput', resolve(opt('--groups')));
 await page.setInputFiles('#fileInput', resolve(csv));
 await page.waitForFunction(() => document.getElementById('app').dataset.state !== 'empty', null, { timeout: 30000 });
 const stateNow = await page.getAttribute('#app', 'data-state');
@@ -105,6 +107,36 @@ if (expectError) {
         steps.push('rfm chip');
       }
       await page.click('#tbl-attention th >> nth=1').catch(() => {}); steps.push('table sort');
+      // Customer groups: accept the first suggestion, check the customer count
+      // drops, then ungroup and check it comes back.
+      const before = await page.evaluate(() => window.ccDashboard.analysis.totals.activeCustomers);
+      await page.click('#groupsBtn');
+      if (!(await page.isVisible('#groupsDialog'))) fail('customer groups dialog did not open');
+      const sugg = await page.$$('#grpSuggested .grp-card .btn.primary');
+      if (sugg.length) {
+        const n = await page.$$eval('#grpSuggested .grp-card >> nth=0 >> .grp-member', (m) => m.length).catch(() => 0);
+        await sugg[0].click();
+        const after = await page.evaluate(() => window.ccDashboard.analysis.totals.activeCustomers);
+        const members = await page.evaluate(() => window.ccDashboard.summary().groups);
+        result.groupCheck = { before, after, members };
+        if (!(after < before)) fail('grouping a suggestion did not reduce active customers (' + before + ' → ' + after + ')');
+        await page.click('#grpActive .grp-card .btn.small >> text=Ungroup');
+        const back = await page.evaluate(() => window.ccDashboard.analysis.totals.activeCustomers);
+        if (back !== before) fail('ungrouping did not restore active customers (' + back + ' vs ' + before + ')');
+        steps.push('groups: grouped ' + n + ' names, ' + before + ' → ' + after + ' → ' + back + ' customers');
+      }
+      // Manual grouping of two names through the picker, then clear.
+      const picks = await page.$$('#grpManual .grp-pick input[type=checkbox]');
+      if (picks.length >= 2) {
+        await picks[0].check(); await picks[1].check();
+        await page.click('#grpManual .btn.primary');
+        const g = await page.evaluate(() => window.ccDashboard.summary().groups.customers);
+        if (g < 1) fail('manual grouping did not create a group');
+        page.once('dialog', (d) => d.accept());
+        await page.click('#grpClear');
+        steps.push('groups: manual + clear');
+      }
+      await page.click('#groupsClose');
       await page.click('#dq summary'); steps.push('dq open');
       if (!(await page.isVisible('#dqBody'))) fail('data quality panel did not expand');
       // Custom date range narrowing re-buckets.

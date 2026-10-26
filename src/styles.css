@@ -276,6 +276,46 @@ table.data tbody tr:hover { background: var(--surface-2); }
 .stat .v { font-size: 20px; font-weight: 650; }
 .stat .s { font-size: 12px; color: var(--muted); }
 
+/* --- Customer groups dialog ------------------------------------------------------------------------ */
+.badge { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 11px; font-weight: 700; background: var(--accent); color: #fff; }
+.badge.warn { background: var(--warn); color: #0b0b0b; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { background: var(--accent-ink); }
+.btn.danger { color: var(--bad-text); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.dialog { width: min(1040px, 92vw); max-height: 88vh; padding: 0; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--surface); color: var(--text); box-shadow: 0 24px 64px rgba(0, 0, 0, .35); }
+.dialog[open] { display: flex; flex-direction: column; }
+.dialog::backdrop { background: rgba(0, 0, 0, .5); }
+.dialog-head { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; padding: 18px 22px 14px; border-bottom: 1px solid var(--border); }
+.dialog-head h2 { font-size: 17px; margin-bottom: 4px; }
+.dialog-head .card-sub { max-width: 760px; }
+.dialog-body { overflow-y: auto; padding: 6px 22px 18px; display: grid; gap: 6px; }
+.dialog-foot { display: flex; align-items: center; gap: 10px; padding: 12px 22px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.dialog-note { color: var(--text-2); font-size: 12.5px; margin-left: auto; }
+.grp-section h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 14px 0 8px; display: flex; align-items: center; gap: 10px; }
+.grp-section h3 .btn { text-transform: none; letter-spacing: 0; }
+.grp-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: var(--bg); }
+.grp-card.suggested { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.grp-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.grp-row input[type=text], .grp-row input[type=search] { border: 1px solid var(--border-strong); background: var(--surface); border-radius: 7px; padding: 6px 9px; font-size: 13px; min-width: 260px; font-weight: 600; }
+.grp-row .spacer { flex: 1; }
+.grp-members { display: grid; gap: 4px; margin: 10px 0 4px; }
+.grp-member { display: grid; grid-template-columns: minmax(180px, 1.3fr) 110px minmax(150px, 1fr) minmax(140px, 1fr) 28px; gap: 10px; align-items: center; font-size: 12.5px; padding: 4px 6px; border-radius: 6px; }
+.grp-member:hover { background: var(--surface-2); }
+.grp-member .nm { font-weight: 600; }
+.grp-member .num { text-align: right; }
+.grp-member .mut { color: var(--text-2); }
+.grp-member .x { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 15px; padding: 0; }
+.grp-member .x:hover { color: var(--bad-text); }
+.grp-reasons { margin: 6px 0 0; padding-left: 18px; color: var(--text-2); font-size: 12px; }
+.grp-empty { color: var(--muted); font-size: 13px; padding: 2px 0 6px; }
+.grp-pick { max-height: 300px; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; margin-top: 8px; }
+.grp-pick label { display: grid; grid-template-columns: 22px minmax(200px, 1.4fr) 110px minmax(140px, 1fr) minmax(140px, 1fr); gap: 8px; align-items: center; padding: 5px 10px; font-size: 12.5px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.grp-pick label:hover { background: var(--surface-2); }
+.grp-pick .num { text-align: right; }
+.grp-pick .mut { color: var(--text-2); }
+.tag.grp { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-ink); cursor: help; }
+
 /* --- Data quality --------------------------------------------------------------------------- */
 .dq { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 0 16px; }
 .dq summary { display: flex; align-items: center; gap: 14px; cursor: pointer; padding: 14px 0; list-style: none; flex-wrap: wrap; }

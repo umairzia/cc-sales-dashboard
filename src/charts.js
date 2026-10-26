@@ -188,6 +188,10 @@
   // ---------------------------------------------------------------------------
   const registry = {};
   let configured = false;
+  // Optional extra tooltip line per customer (app.js lists grouped names).
+  let nameNote = () => null;
+  const setNameNote = (fn) => { nameNote = fn; };
+  const withNote = (name, lines) => { const n = nameNote(name); return n ? [].concat(lines, ' ' + n) : lines; };
 
   function configure(t) {
     const C = root.Chart;
@@ -366,7 +370,7 @@
         plugins: {
           legend: { display: false },
           tooltip: { callbacks: {
-            label: (ctx) => { const x = list[ctx.dataIndex]; return [' Trend: ' + Fmt.signedMoney(x.slope) + per, ' Active in ' + x.active + ' of ' + x.buckets + ' ' + unitNoun + 's', ' Revenue: ' + Fmt.money(x.gross / 100)]; },
+            label: (ctx) => { const x = list[ctx.dataIndex]; return withNote(x.name, [' Trend: ' + Fmt.signedMoney(x.slope) + per, ' Active in ' + x.active + ' of ' + x.buckets + ' ' + unitNoun + 's', ' Revenue: ' + Fmt.money(x.gross / 100)]); },
           } },
           valueLabels: { color: t.text2, weight: '500', format: (v) => (v >= 0 ? '▲ +' : '▼ ' + MINUS) + Fmt.compact(Math.abs(v)) + per },
         },
@@ -397,7 +401,7 @@
         },
         plugins: {
           legend: { display: false },
-          tooltip: { callbacks: { label: (ctx) => o.tooltip(items[ctx.dataIndex]) } },
+          tooltip: { callbacks: { label: (ctx) => withNote(items[ctx.dataIndex].name, o.tooltip(items[ctx.dataIndex])) } },
           valueLabels: { color: t.text2, weight: '500', format: (v, i) => o.labelFmt(v, items[i]) },
         },
       },
@@ -461,6 +465,7 @@
         plugins: {
           legend: { labels: { usePointStyle: true } },
           tooltip: { callbacks: {
+            afterBody: (items) => { const n = nameNote(list[items[0].dataIndex].name); return n ? ' ' + n : ''; },
             label: (ctx) => {
               const x = list[ctx.dataIndex];
               return ctx.datasetIndex === 0 ? ' Usual gap: ' + x.avgGap.toFixed(1) + ' days (' + x.chargeDays + ' charge days)'
@@ -586,7 +591,7 @@
 
   root.CCFormat = Fmt;
   root.CCCharts = {
-    theme, configure, destroy, destroyAll, setEmpty, make, mix, alpha, hatch,
+    theme, configure, destroy, destroyAll, setEmpty, make, mix, alpha, hatch, setNameNote,
     revenue, pop, slopes, hbar, pareto, cadence, rfmBar, acquisition, cardMix, cardFail, cardColor, segColors,
     registry,
   };

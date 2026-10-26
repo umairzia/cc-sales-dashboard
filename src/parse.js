@@ -83,6 +83,9 @@
     currency: { label: 'Currency',        required: false, aliases: ['currency', 'currencycode'] },
     // Optional extra (judgement call, see README): shown next to voided rows.
     voidNote: { label: 'Void Comment',    required: false, aliases: ['voidcomment', 'voidreason'] },
+    // Optional, used only to suggest customer groups (see groups.js).
+    cardholder: { label: "Cardholder's Name", required: false, aliases: ['cardholdersname', 'cardholdername', 'cardholder', 'nameoncard'] },
+    cardNumber: { label: 'Card Number',     required: false, aliases: ['cardnumber', 'maskedcardnumber', 'maskedpan'] },
   };
 
   function detectColumns(header) {
@@ -160,6 +163,9 @@
 
   const ONE_TIME = 'One-Time Manual Charge';
 
+  /** Last four digits of a masked card number ("45207100XXX6592" → "6592"). */
+  const lastFour = (v) => { const m = /(\d{4})\s*$/.exec(String(v || '')); return m ? m[1] : ''; };
+
   // ---------------------------------------------------------------------------
   // Main entry: text → { rows, quality, meta } or throws a readable Error.
   // ---------------------------------------------------------------------------
@@ -230,6 +236,8 @@
         cents, currency, card, status: st.status,
         reason: st.status === 'Failed' ? st.reason : '',
         voidNote: found.voidNote !== undefined ? (cells[found.voidNote] || '').trim() : '',
+        cardholder: found.cardholder !== undefined ? (cells[found.cardholder] || '').trim().replace(/\s+/g, ' ') : '',
+        last4: found.cardNumber !== undefined ? lastFour(cells[found.cardNumber]) : '',
       };
       if (cents < 0) sample(q.negative, row);
       if (cents === 0) sample(q.zero, row);

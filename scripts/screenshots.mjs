@@ -39,6 +39,9 @@ await shoot('light', async (page) => {
   await section(page, 'h-cust').locator('.grid > article').nth(1).screenshot({ path: resolve(out, 'concentration.png') });
   await section(page, 'h-rfm').screenshot({ path: resolve(out, 'segments.png') });
   await section(page, 'h-risk').screenshot({ path: resolve(out, 'risk.png') });
+  await page.click('#groupsBtn');
+  await page.locator('#groupsDialog').screenshot({ path: resolve(out, 'customer-groups.png') });
+  await page.click('#groupsClose');
   await page.click('#dq summary');
   await page.locator('#dq').screenshot({ path: resolve(out, 'data-quality.png') });
   await load(page, resolve(root, 'tests', 'fixtures', 'missing_status_column.csv'));
