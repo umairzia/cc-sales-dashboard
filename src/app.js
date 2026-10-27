@@ -46,6 +46,7 @@
       state.members.get(g).push(label);
     }
     for (const [g, list] of state.members) if (list.length === 1 && list[0] === g) state.members.delete(g);
+    state.manualAssigned = state.rows.filter((r) => r.oneTime && r.cardholder && state.groups[G.manualKey(r.cardholder)]).length;
   }
   function pendingSuggestions() {
     return state.suggestions.filter((s) => !state.dismissed.includes(sugKey(s)) && new Set(s.members.map(resolve)).size > 1);
@@ -71,7 +72,7 @@
     const mem = state.members.get(name);
     return [name,
       oneTime ? el('span', { class: 'tag agg', title: 'Not a customer: an aggregate of unrelated cards keyed in once', text: 'aggregate †' }) : null,
-      mem ? el('span', { class: 'tag grp', title: 'One customer, shown under these names in the export: ' + mem.join(' + '), text: mem.length > 1 ? mem.length + ' names' : 'grouped' }) : null];
+      mem ? el('span', { class: 'tag grp', title: 'One customer, shown under these names in the export: ' + mem.map(G.display).join(' + '), text: mem.length > 1 ? mem.length + ' names' : 'grouped' }) : null];
   };
 
   /** Sortable table. columns: {key,label,num,fmt(row)→string|Node[],sort(row)→value} */
@@ -675,7 +676,8 @@
     add(pendN ? 'warn' : 'info', 'Customer names grouped', grouped ? F.int(grouped) + ' → ' + F.int(state.members.size) : '0',
       (grouped ? 'Your customer groups combine ' + F.int(grouped) + ' export names into ' + plural(state.members.size, 'customer') + '. ' : '') +
       (pendN ? plural(pendN, 'suggested group') + ' waiting for review under Customer groups.' : grouped ? '' : 'Each name in the export is treated as its own customer.'));
-    add('info', 'Blank customer names relabelled', F.int(q.blankCustomer), 'Shown as “One-Time Manual Charge”: cards keyed in once, treated as one aggregate pseudo-customer');
+    add('info', 'Blank customer names relabelled', F.int(q.blankCustomer), 'Shown as “One-Time Manual Charge”: cards keyed in once, treated as one aggregate pseudo-customer' +
+      (state.manualAssigned ? '. ' + F.int(state.manualAssigned) + ' of them belong to a customer through your customer groups (matched by cardholder) and are counted there instead' : ''));
     add('info', 'Blank statuses relabelled', F.int(q.blankStatus), 'Blank status = an unsuccessful attempt → Failed');
     if (q.suffixedFailed) add('info', '“Failed – Result …” statuses', F.int(q.suffixedFailed), 'Normalised to Failed; the processor message is kept as the failure reason');
     const negTotal = q.negative.reduce((s, r) => s + r.cents, 0);
@@ -849,7 +851,7 @@
         rfmSegments: a.rfm ? Object.fromEntries(a.rfm.segments.map((s) => [s.name, s.count])) : null,
         attention: a.momentum.attention.map((x) => x.name), quiet: a.momentum.quiet.map((x) => x.name),
         duplicates: a.duplicates.length,
-        groups: { namesGrouped: [...state.members.values()].reduce((n, l) => n + l.length, 0), customers: state.members.size, pending: pendingSuggestions().length, suggested: state.suggestions.map((x) => ({ name: x.name, members: x.members })) },
+        groups: { namesGrouped: [...state.members.values()].reduce((n, l) => n + l.length, 0), customers: state.members.size, pending: pendingSuggestions().length, suggested: state.suggestions.map((x) => ({ name: x.name, members: x.members.map(G.display) })), manualAssigned: state.manualAssigned || 0 },
         quality: { parsed: state.quality.parsed, total: state.quality.totalDataRows, blankCustomer: state.quality.blankCustomer, blankStatus: state.quality.blankStatus, negative: state.quality.negative.length, zero: state.quality.zero.length, badDate: state.quality.badDate.length },
         kpiText: Array.from(document.querySelectorAll('.kpi')).map((k) => ({ key: k.dataset.kpi, value: k.querySelector('.kpi-value').textContent, delta: k.querySelector('.kpi-delta').textContent })),
       };
@@ -863,11 +865,11 @@
   function memberRow(label, onRemove) {
     const p = state.profiles.get(label);
     const kids = p
-      ? [el('span', { class: 'nm', text: label }), el('span', { class: 'num', text: cents$(p.gross) }),
+      ? [el('span', { class: 'nm', text: G.display(label) }), el('span', { class: 'num', text: cents$(p.gross) }),
         el('span', { class: 'mut', text: [...p.cards.keys()].join(', ') || '—' }),
-        el('span', { class: 'mut', text: p.holders.size ? 'Cardholder: ' + [...p.holders].slice(0, 2).join(', ') : '' })]
-      : [el('span', { class: 'nm', text: label }), el('span', { class: 'num mut', text: '—' }), el('span', { class: 'mut', text: 'not in this file' }), el('span')];
-    kids.push(onRemove ? el('button', { type: 'button', class: 'x', title: 'Remove “' + label + '” from this group', 'aria-label': 'Remove ' + label, onclick: onRemove, text: '×' }) : el('span'));
+        el('span', { class: 'mut', text: p.manual ? plural(p.rows, 'charge') + ' keyed in with no customer name' : p.holders.size ? 'Cardholder: ' + [...p.holders].slice(0, 2).join(', ') : '' })]
+      : [el('span', { class: 'nm', text: G.display(label) }), el('span', { class: 'num mut', text: '—' }), el('span', { class: 'mut', text: 'not in this file' }), el('span')];
+    kids.push(onRemove ? el('button', { type: 'button', class: 'x', title: 'Remove “' + G.display(label) + '” from this group', 'aria-label': 'Remove ' + G.display(label), onclick: onRemove, text: '×' }) : el('span'));
     return el('div', { class: 'grp-member' }, kids);
   }
 
@@ -879,7 +881,7 @@
     if (note) $('grpNote').textContent = note;
   }
   function groupAs(name, labels) {
-    name = (name || '').trim().replace(/\s+/g, ' ') || labels[0];
+    name = (name || '').trim().replace(/\s+/g, ' ') || G.nameOf(labels.find((l) => !G.isManual(l)) || labels[0]);
     labels.forEach((l) => { state.groups[l] = name; });
     commitGroups('Grouped ' + labels.length + ' names as “' + name + '”.');
   }
@@ -937,7 +939,7 @@
           delete state.groups[l];
           const left = Object.keys(state.groups).filter((k) => state.groups[k] === g);
           if (left.length === 1 && left[0] === g) delete state.groups[g];
-          commitGroups('Removed “' + l + '”.');
+          commitGroups('Removed “' + G.display(l) + '”.');
         })))));
     });
 
@@ -946,22 +948,24 @@
       const search = el('input', { type: 'search', placeholder: 'Filter customer names…', 'aria-label': 'Filter customer names' });
       const nameIn = el('input', { type: 'text', placeholder: 'Customer name for the group', 'aria-label': 'Name for the new group' });
       const pick = el('div', { class: 'grp-pick' });
-      const labels = [...state.profiles.keys()].sort((a, b) => a.localeCompare(b));
+      // Named customers first, then manual charges (by cardholder).
+      const labels = [...state.profiles.keys()].sort((a, b) => (G.isManual(a) - G.isManual(b)) || G.nameOf(a).localeCompare(G.nameOf(b)));
       const boxes = new Map();
       labels.forEach((l) => {
         const p = state.profiles.get(l);
         const cb = el('input', { type: 'checkbox', value: l });
         boxes.set(l, cb);
-        pick.append(el('label', null, cb, el('span', { text: l }), el('span', { class: 'num', text: cents$(p.gross) }),
+        pick.append(el('label', null, cb, el('span', { text: G.display(l) }), el('span', { class: 'num', text: cents$(p.gross) }),
           el('span', { class: 'mut', text: [...p.cards.keys()].join(', ') }), el('span', { class: 'mut', text: resolve(l) !== l ? 'in “' + resolve(l) + '”' : '' })));
       });
       search.addEventListener('input', () => {
         const q = search.value.trim().toLowerCase();
-        for (const [l, cb] of boxes) cb.parentElement.hidden = q && !l.toLowerCase().includes(q);
+        for (const [l, cb] of boxes) cb.parentElement.hidden = q && !G.display(l).toLowerCase().includes(q);
       });
       pick.addEventListener('change', () => {
         const chosen = labels.filter((l) => boxes.get(l).checked);
-        if (chosen.length && !nameIn.dataset.touched) nameIn.value = chosen.slice().sort((a, b) => state.profiles.get(b).gross - state.profiles.get(a).gross)[0];
+        const named = chosen.filter((l) => !G.isManual(l));
+        if (chosen.length && !nameIn.dataset.touched) nameIn.value = G.nameOf((named.length ? named : chosen).slice().sort((a, b) => state.profiles.get(b).gross - state.profiles.get(a).gross)[0]);
       });
       nameIn.addEventListener('input', () => { nameIn.dataset.touched = '1'; });
       man.append(el('div', { class: 'grp-row' }, search, el('span', { class: 'spacer' }), nameIn,
@@ -1012,7 +1016,7 @@
       state.groups = {};
       commitGroups('All groups removed.');
     });
-    C.setNameNote((name) => { const m = state.members.get(name); return m ? 'Combines: ' + m.join(' + ') : null; });
+    C.setNameNote((name) => { const m = state.members.get(name); return m ? 'Combines: ' + m.map(G.display).join(' + ') : null; });
   }
 
   loadStore();

@@ -98,7 +98,9 @@ A failed charge is often re-attempted days later for the same amount.
 
 `Customer Number` is one label per card on file, so one customer can have several.
 A groups mapping (`label → customer`) is applied to every row before any
-calculation; the one-time manual-charge aggregate is never mapped.
+calculation. Manual charges (blank `Customer Number`) can also be mapped, by
+their cardholder name; once mapped they leave the one-time aggregate and count
+as that customer. Manual charges without a cardholder are never mapped.
 
 Suggestions link two labels when:
 
@@ -109,6 +111,12 @@ Suggestions link two labels when:
 2. the cardholder name on one label (with the same tags removed) is another
    label's name.
 
+A manual charge takes part through its cardholder name (rule 1): the manual
+charges by `Fig Deli Temp` are suggested for `Fig Deli`. A manual charge is only
+ever suggested alongside a named customer. A card number shared by two labels is
+**not** treated as a link, because chains often pay for several locations with
+one corporate card.
+
 Linked labels form one suggestion. Its proposed name is the tag-free name that
 covers the most revenue. Suggestions are never applied automatically.
 
@@ -116,10 +124,14 @@ Groups are stored in the browser's `localStorage` and can be exported or
 imported as a CSV:
 
 ```csv
-Customer Number,Group As
-"Fig Deli OTO","Fig Deli"
-"Fig Deli 4242","Fig Deli"
+Customer Number,Cardholder (manual charges),Group As
+"Fig Deli OTO","","Fig Deli"
+"Fig Deli 4242","","Fig Deli"
+"","Fig Deli Temp","Fig Deli"
 ```
+
+The cardholder column is only filled for manual charges, and older two-column
+files (`Customer Number,Group As`) still load.
 
 ## Duplicates
 

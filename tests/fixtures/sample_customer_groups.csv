@@ -1,6 +1,7 @@
-Customer Number,Group As
-Ember Kitchen,Ember Kitchen
-Harbourline Hospitality One Time Only,Ember Kitchen
-Northwind Eatery,Northwind Eatery
-Northwind Eatery 2082,Northwind Eatery
-Northwind Eatery OTO,Northwind Eatery
+Customer Number,Cardholder (manual charges),Group As
+Ember Kitchen,,Ember Kitchen
+Harbourline Hospitality One Time Only,,Ember Kitchen
+Northwind Eatery,,Northwind Eatery
+Northwind Eatery 2082,,Northwind Eatery
+Northwind Eatery OTO,,Northwind Eatery
+,Northwind Eatery Temp,Northwind Eatery

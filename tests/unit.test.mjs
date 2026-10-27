@@ -200,25 +200,40 @@ test('customer groups: card tags, own card endings and cardholder links are sugg
     r('Cedar Grill', '3333', 'M. Chen', 50000), r('Northwind Group One Time Only', '5555', 'Cedar Grill'),
     r('Copper Bistro Midtown', '6666', 'S. Patel'), r('Copper Bistro Lakeshore', '7777', 'S. Patel'),       // two locations
     r('Harbour Grill 7018', '8888', 'Harbour Grill'), r('Harbour Grill 7061', '9999', 'Harbour Grill'),               // store numbers
-    Object.assign(r('', '0000', 'Fig Deli'), { customer: P.ONE_TIME, oneTime: true }),        // one-time: never grouped
+    Object.assign(r('', '0000', 'Fig Deli'), { customer: P.ONE_TIME, oneTime: true }),        // manual charge by "Fig Deli"
+    Object.assign(r('', '0001', ''), { customer: P.ONE_TIME, oneTime: true }),                // manual, no cardholder: never grouped
   ];
   const sug = G.suggestGroups(rows);
   assert.deepEqual(sug.map((s) => [s.name, s.members.slice().sort()]), [
-    ['Fig Deli', ['Fig Deli', 'Fig Deli 4242', 'Fig Deli OTO']],
+    ['Fig Deli', [G.manualKey('Fig Deli'), 'Fig Deli', 'Fig Deli 4242', 'Fig Deli OTO']],
     ['Cedar Grill', ['Cedar Grill', 'Northwind Group One Time Only']],
   ]);
   assert.ok(sug[1].reasons.some((x) => /cardholder on “Northwind Group One Time Only” is “Cedar Grill”/.test(x)));
 
   // Applying groups: one customer, original label kept; retries now chain across the customer's labels.
   const mapping = { 'Fig Deli OTO': 'Fig Deli', 'Fig Deli 4242': 'Fig Deli' };
-  const g = G.applyGroups([r('Fig Deli OTO', '2222', '', 5000, 'Failed'), r('Fig Deli 4242', '4242', '', 5000, 'Batched'), rows[9]], mapping);
+  const g = G.applyGroups([r('Fig Deli OTO', '2222', '', 5000, 'Failed'), r('Fig Deli 4242', '4242', '', 5000, 'Batched'), rows[10]], mapping);
   assert.deepEqual(g.map((x) => [x.customer, x.alias || null]), [['Fig Deli', 'Fig Deli OTO'], ['Fig Deli', 'Fig Deli 4242'], [P.ONE_TIME, null]]);
   assert.equal(M.retryChains(g).chains.length, 1);
 });
 
+test('manual charges: suggested by cardholder card tag, assigned by cardholder, never grouped on their own', () => {
+  const r = (customer, cardholder, cents = 10000, status = 'Batched') => ({ day: 1, second: 0, line: 1, customer: customer || P.ONE_TIME, oneTime: !customer, cents, card: 'VISA', status, last4: '1234', cardholder });
+  const rows = [r('Fig Deli', 'Ana Rivera', 50000), r('', 'Fig Deli Temp', 30000), r('', 'Fig Deli Temp', 12000, ''), r('', 'Walk-in Temp'), r('', 'Walk-in')];
+  const sug = G.suggestGroups(rows);
+  assert.deepEqual(sug.map((s) => [s.name, s.members.map(G.display)]), [['Fig Deli', ['Fig Deli', 'Manual charge · Fig Deli Temp']]]);
+  const g = G.applyGroups(rows, { [G.manualKey('Fig Deli Temp')]: 'Fig Deli' });
+  assert.deepEqual(g.map((x) => [x.customer, x.oneTime]), [['Fig Deli', false], ['Fig Deli', false], ['Fig Deli', false], [P.ONE_TIME, true], [P.ONE_TIME, true]]);
+  const a = M.analyse(g, {});
+  assert.equal(a.totals.oneTimeCharges, 2);
+  assert.equal(a.top15[0].name, 'Fig Deli');
+  assert.equal(a.top15[0].gross, 80000);
+});
+
 test('groups file round-trips through CSV, including commas and quotes', () => {
-  const mapping = { 'Fig Deli OTO': 'Fig Deli', 'Smith, J "Temp"': 'Fig Deli', 'Cedar Grill': 'Cedar Grill' };
+  const mapping = { 'Fig Deli OTO': 'Fig Deli', 'Smith, J "Temp"': 'Fig Deli', 'Cedar Grill': 'Cedar Grill', [G.manualKey('Fig Deli Temp, AMEX')]: 'Fig Deli' };
   assert.deepEqual(G.fromCSV(G.toCSV(mapping), P.parseCSV), mapping);
+  assert.match(G.toCSV(mapping), /^Customer Number,Cardholder \(manual charges\),Group As\r\n/);
   assert.deepEqual(G.fromCSV('customer,group\nA OTO,A\n,\n', P.parseCSV), { 'A OTO': 'A' });
   assert.throws(() => G.fromCSV('name,amount\nA,1', P.parseCSV), /Customer Number.*Group As/);
 });

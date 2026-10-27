@@ -29,26 +29,40 @@ ALIASES = {
     "card": ["cardtype", "cardscheme", "cardbrand"],
     "status": ["status", "transactionstatus", "result"],
 }
+OPTIONAL = {"cardholder": ["cardholdersname", "cardholdername", "cardholder", "nameoncard"]}
 
 
-def load_groups(path: str | None) -> dict[str, str]:
-    """Customer-groups file: "Customer Number" → "Group As" (read independently)."""
+def load_groups(path: str | None) -> tuple[dict[str, str], dict[str, str]]:
+    """Customer-groups file (read independently). Returns two maps:
+    customer number → group, and cardholder → group for manual charges
+    (rows whose Customer Number is blank)."""
     if not path:
-        return {}
+        return {}, {}
     g = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
     cols = {re.sub(r"[^a-z0-9]+", " ", c.lower()).strip(): c for c in g.columns}
     src, dst = cols["customer number"], cols["group as"]
+    holder = next((c for k, c in cols.items() if k.startswith("cardholder")), None)
     tidy = lambda s: s.str.strip().str.replace(r"\s+", " ", regex=True)
-    return {k: v for k, v in zip(tidy(g[src]), tidy(g[dst])) if k and v}
+    names, groups = tidy(g[src]), tidy(g[dst])
+    holders = tidy(g[holder]) if holder else pd.Series([""] * len(g))
+    by_name = {k: v for k, v in zip(names, groups) if k and v}
+    by_holder = {h: v for k, h, v in zip(names, holders, groups) if not k and h and v}
+    return by_name, by_holder
 
 
-def load(path: str, groups: dict[str, str] | None = None) -> pd.DataFrame:
+def load(path: str, groups: tuple[dict[str, str], dict[str, str]] = ({}, {})) -> pd.DataFrame:
     raw = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig", skip_blank_lines=True)
     norm = {re.sub(r"[^a-z0-9]", "", c.lower()): c for c in raw.columns}
     cols = {}
     for key, names in ALIASES.items():
         cols[key] = next(norm[n] for n in names if n in norm)
+    for key, names in OPTIONAL.items():
+        hit = next((norm[n] for n in names if n in norm), None)
+        if hit:
+            cols[key] = hit
     df = pd.DataFrame({k: raw[v] for k, v in cols.items()})
+    if "cardholder" not in df:
+        df["cardholder"] = ""
     df["order"] = np.arange(len(df))
 
     # Day-first slash dates or year-first ISO dates; each format tried explicitly.
@@ -66,8 +80,14 @@ def load(path: str, groups: dict[str, str] | None = None) -> pd.DataFrame:
     df["cents"] = df["cents"].astype(np.int64)
     df["cust"] = df["customer"].str.strip().str.replace(r"\s+", " ", regex=True).replace("", ONE_TIME)
     df["one_time"] = df["cust"] == ONE_TIME
-    if groups:  # several export names → one customer (never the one-time aggregate)
-        df.loc[~df.one_time, "cust"] = df.loc[~df.one_time, "cust"].map(lambda c: groups.get(c, c))
+    by_name, by_holder = groups
+    if by_name:  # several export names → one customer
+        df.loc[~df.one_time, "cust"] = df.loc[~df.one_time, "cust"].map(lambda c: by_name.get(c, c))
+    if by_holder:  # manual charges assigned to a customer by their cardholder
+        holder = df["cardholder"].str.strip().str.replace(r"\s+", " ", regex=True)
+        hit = df.one_time & holder.isin(list(by_holder))
+        df.loc[hit, "cust"] = holder[hit].map(by_holder)
+        df.loc[hit, "one_time"] = False
     df["card"] = df["card"].str.strip().str.upper().replace("", "UNKNOWN")
     df["day"] = df["ts"].dt.normalize()
     return df.sort_values(["ts", "order"]).reset_index(drop=True)

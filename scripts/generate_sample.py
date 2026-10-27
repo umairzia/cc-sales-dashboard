@@ -261,13 +261,17 @@ def add_multi_card(rng: random.Random, txns: list[Txn], custs: list[Customer], s
     ending = f"{rng.randint(1000, 9999)}"
     charges(f"{a.name} OTO", "VISA", f"{rng.randint(0, 9999):04d}", rng.choice(PEOPLE), 9, int(span * 0.3), int(span * 0.7), a.base)
     charges(f"{a.name} {ending}", "MC", ending, a.name, 6, int(span * 0.6), span, a.base)
+    # a again: a temporary card keyed in by hand with no customer name (a manual
+    # charge), recognisable only by its cardholder "<name> Temp".
+    charges("", "AMEX", f"{rng.randint(0, 9999):04d}", f"{a.name} Temp", 2, int(span * 0.2), int(span * 0.4), a.base)
     # b: a parent company paying on its own card, linked only by the cardholder name.
     charges("Harbourline Hospitality One Time Only", "AMEX", f"{rng.randint(0, 9999):04d}", b.name, 7, 30, span - 10, b.base * 1.1)
     # Store numbers that are not card endings: two separate locations, never merged.
     charges("Quarry Market 7012", "VISA", f"{rng.randint(0, 9999):04d}", "Quarry Market", 12, 0, span, 420)
     charges("Quarry Market 7044", "VISA", f"{rng.randint(0, 9999):04d}", "Quarry Market", 10, 0, span, 380)
-    return {a.name: a.name, f"{a.name} OTO": a.name, f"{a.name} {ending}": a.name,
-            b.name: b.name, "Harbourline Hospitality One Time Only": b.name}
+    # (customer number, cardholder for manual charges, group)
+    return [(a.name, "", a.name), (f"{a.name} OTO", "", a.name), (f"{a.name} {ending}", "", a.name), ("", f"{a.name} Temp", a.name),
+            (b.name, "", b.name), ("Harbourline Hospitality One Time Only", "", b.name)]
 
 
 def row(rng: random.Random, t: Txn) -> list[str]:
@@ -318,14 +322,14 @@ def main_sample(out: Path) -> None:
     add_quirks(rng, txns, start, end)
     groups = add_multi_card(rng, txns, custs, start, end)
     write_csv(out, HEADER, export_rows(rng, txns))
-    write_csv(ROOT / "tests" / "fixtures" / "sample_customer_groups.csv", ["Customer Number", "Group As"],
-              [[k, v] for k, v in sorted(groups.items())], bom=False)
+    write_csv(ROOT / "tests" / "fixtures" / "sample_customer_groups.csv", ["Customer Number", "Cardholder (manual charges)", "Group As"],
+              [list(r) for r in sorted(groups, key=lambda r: (r[2], r[0] or r[1]))], bom=False)
     blank = sum(1 for t in txns if t.status == "")
     cards = {k: sum(1 for t in txns if t.card == k) for k in CARD_PREFIX}
     decliners = [c.name for c in custs if c.trend <= -0.6]
     print(f"wrote {out.relative_to(ROOT)}: {len(txns)} rows, {len({t.customer for t in txns if t.customer})} customers, "
           f"{blank} blank statuses ({blank / len(txns):.1%}), cards {cards}, deliberate decliners: {decliners}, "
-          f"multi-card customers: {sorted(set(groups.values()))}")
+          f"multi-card customers: {sorted({r[2] for r in groups})}")
 
 
 def fixtures(dirpath: Path) -> None:

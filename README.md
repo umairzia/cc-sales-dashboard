@@ -132,7 +132,13 @@ switches cards then looks like one account going quiet and a new one appearing.
   - the cardholder name on one is the other's customer name.
 
   Store numbers that aren't card endings (`Harbour Grill 7018`) and different locations
-  (`Copper Bistro Midtown` / `Copper Bistro Lakeshore`) are never suggested.
+  (`Copper Bistro Midtown` / `Copper Bistro Lakeshore`) are never suggested. Neither is a
+  card shared between names: chains often pay for several locations with one
+  corporate card, and those locations are still separate customers.
+- **Manual charges too.** A charge keyed in with no customer name normally joins the
+  "One-Time Manual Charge" aggregate. If its cardholder identifies a customer (for
+  example `Fig Deli Temp`), it can be assigned to that customer by cardholder name.
+  Matching tags are suggested automatically; anything else can be picked by hand.
 - **You confirm.** Nothing is merged until you click *Group as one customer*. You
   can rename the group, mark a suggestion *Not the same*, group any names by hand,
   or ungroup later.
@@ -230,7 +236,8 @@ here so it isn't hidden in the code.
   only merged once you confirm (see *Customer groups*). Grouping happens before every
   calculation. A failure on one of a customer's cards followed by a success on
   another card of the same type, for the same amount, now counts as a recovered
-  retry. The one-time manual-charge aggregate is never grouped.
+  retry. Manual charges (no customer name) stay in the one-time aggregate unless you
+  assign them to a customer by their cardholder name.
 - **Two date formats.** The brief specified `DD/MM/YYYY` (day first). Newer exports
   write `YYYY-MM-DD HH:MM:SS`, which is unambiguous because the year comes first,
   so both are accepted. Slash dates are still always day first; month-first dates
