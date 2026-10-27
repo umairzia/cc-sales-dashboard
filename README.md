@@ -155,27 +155,55 @@ switches cards then looks like one account going quiet and a new one appearing.
 **Header and filters.** File name, data range, row count, currency; a date-range
 filter with presets; grouping (auto-picked from the data's span); status filter.
 
-| Data span | Default grouping |
-|---|---|
-| ≤ 60 days | Daily |
-| 61 days – 6 months | Weekly |
-| 6 months – 5 years | Monthly |
-| 5 years or more | Quarterly |
+### Any length of export: 3 weeks, 3 months or 3 years
+
+The dashboard reads the span of the export (or of the selected date range) and
+picks a **timeframe**. The timeframe decides what every comparison means, so each
+section gives the version of its answer that's meaningful for that much history.
+Chart grouping is separate and only decides how the bars are drawn. A notice at
+the top says, in one sentence, how the current export is being read.
+
+| | **A few weeks** (≤ 45 days) | **A few months** (46–183 days) | **About a year** (184–395 days) | **More than a year** (396+ days) |
+|---|---|---|---|---|
+| Charts grouped by | day | day (≤ 60 days), then week | month | month (quarter from 5 years) |
+| KPI tiles compare | last 7 days vs previous 7 | last 4 weeks vs previous 4 | last complete month vs the month before | last complete month vs **the same month a year earlier** |
+| % change chart compares | each day with the same weekday a week before | each week with the week before | each month with the month before | each month with **the same month a year earlier** |
+| Customers tracked by | 7-day blocks counted back from the last day | 7-day blocks | complete months | complete months; trends over the last 12 |
+| Needs attention | last 2 weeks vs 2 before | last 4 weeks vs 4 before | last 3 months vs 3 before | last 3 months vs **the same 3 months a year earlier** |
+| Gone quiet | nothing in the last 2 weeks | nothing in the last 2 weeks | nothing in the last 2 months | nothing in the last 2 months |
+| New customers | not shown: too little history to tell | after a 35-day settling-in window | after a 45-day settling-in window | after a 45-day settling-in window |
+| Extra | | | | **Year over year** chart and annual totals |
+
+Why these choices:
+- **Customers are tracked in whole weeks or months, never days.** In real exports
+  about 75% of customers order at least every 2 weeks and about 95% at least every
+  5 weeks, so a day-by-day comparison would flag regular customers on their normal
+  off days.
+- **Year-on-year comparisons cancel out seasonality.** A summer peak or a quiet
+  January doesn't look like growth or a slowdown.
+- **Gone quiet also needs the silence to be longer than twice the customer's own
+  usual gap,** so a monthly customer isn't flagged after 2 weeks.
+- **New customers need a settling-in window.** Every export starts part-way through
+  existing relationships, so customers first seen in its opening weeks count as
+  existing customers.
 
 **KPI tiles.** Gross and net revenue, transactions, average transaction, active
 customers, success rate, retry recovery rate and voided amount. Each tile shows
-the change from the last complete period to the one before, with an arrow, a sign
-and a colour.
+the change between the two windows the timeframe picks (above), with an arrow, a
+sign and a colour. The gross tile also shows the average per week or per month.
 
 **Revenue over time.** Revenue per period with a rolling average (3-month, 4-week,
 7-day or 4-quarter) and the highest and lowest periods annotated. Below it, a
-diverging chart of period-over-period % change, which makes a *slowdown* visible
-and not just a level.
+diverging chart of % change against a comparable earlier period, which makes a
+*slowdown* visible and not just a level. Exports covering more than a year add a
+**Year over year** chart, with one line per calendar year and annual and
+year-to-date totals.
 
-**Momentum and slowdown.** A linear trend ($ per period) for every customer with
-enough history, drawn as a diverging bar chart (deeper red = steeper decline). Next
-to it: a **Needs attention** table (recent 3 periods at least *X*% below the 3 before,
-with an adjustable threshold) and a **Gone quiet** list sorted by lifetime revenue.
+**Momentum and slowdown.** A linear trend ($ per week or month) for every customer
+with enough history, drawn as a diverging bar chart (deeper red = steeper
+decline). Next to it: a **Needs attention** table (recent spending at least *X*%
+below a baseline, with an adjustable threshold) and a **Gone quiet** list sorted by
+lifetime revenue.
 
 ![Customer trend, needs attention and gone quiet](docs/screenshots/momentum.png)
 
@@ -193,7 +221,7 @@ customers.
 
 ![RFM segments](docs/screenshots/segments.png)
 
-**Acquisition.** New vs returning customers per period, with a cumulative line of
+**Acquisition.** New vs existing customers per period, with a cumulative line of
 unique customers, which shows whether the base is growing or just churning sideways.
 
 **Risk and operations.** Failure rate by customer (10+ attempts only, stated on
@@ -257,13 +285,16 @@ here so it isn't hidden in the code.
   divided by 100.
 
 **Periods**
+- **Timeframes.** The brief only adapted the chart grouping. Comparisons, customer
+  tracking and "new customer" now adapt to the export's length as well (see *Any
+  length of export*). The thresholds come from real ordering gaps.
 - **Partial periods.** A period is partial when the selected range doesn't cover
   all of it, for example an export that starts on 6 January. Partial periods are
-  hatched and starred in charts, and left out of period-over-period changes,
-  rolling averages, KPI deltas and the momentum analysis. Otherwise a 28-day
-  November would look like a slowdown. If an export really covers the whole first
-  or last month, set *From/To* to the month boundaries and that month counts as
-  complete.
+  hatched and starred in charts and skipped in the % change chart and rolling
+  average. The tiles and customer tracking use complete 7-day blocks or complete
+  months, so partial periods never affect them. Otherwise a 28-day November would
+  look like a slowdown. If an export really covers the whole first or last month,
+  set *From/To* to the month boundaries and that month counts as complete.
 - **The 5-year boundary.** The brief's table puts "2–5 years" under monthly and
   "> 5 years" under quarterly, but also expects a 5-year file to be quarterly. A
   span of **1,826 days or more** (five full calendar years) is quarterly.
@@ -296,21 +327,23 @@ here so it isn't hidden in the code.
 - **"Possibly paid another way"** is a context-only figure: unrecovered failures
   where the same customer paid a *different* amount or card within 7 days. It is
   not part of the recovery rate.
-- **Momentum** uses complete periods from each customer's first period, needing at
-  least 4 periods with 3 active, so a customer who joined in month 9 isn't fitted
-  with eight leading zeros. *Needs attention* is sorted by dollar shortfall (an
-  extra column) and needs 6 complete periods. *Gone quiet* requires at least 2
-  successful charges before the silence, so one-off buyers aren't listed.
-- **Average revenue per active period** divides by periods with at least one
-  successful charge.
+- **Momentum** uses each customer's periods from their first one, so a customer
+  who joined in month 9 isn't fitted with eight leading zeros. It needs at least 4
+  periods with 3 active (3 with 2 for a few weeks of data). *Needs attention* is
+  sorted by dollar shortfall (an extra column). *Gone quiet* requires at least 2
+  successful charges before the silence, and a silence longer than twice the
+  customer's usual gap, so one-off and monthly buyers aren't listed by mistake.
+- **Average revenue per active week or month** (week for exports up to ~6 months)
+  divides by the weeks or months with at least one successful charge.
 - **Payment cadence** uses distinct charge days and needs 3 or more. A customer is
   overdue when the days since their last charge are at least twice their usual
   gap and at least 7 days. The axis is capped at 3× the largest usual gap; markers
   off the scale show as ▶.
 - **RFM** covers named customers only, breaks ties alphabetically, and needs at
   least 4 customers.
-- **Acquisition** counts "new" relative to the start of the export, so everyone in
-  the first period is new. The caption says so.
+- **Acquisition** counts "new" only after a settling-in window (35 or 45 days),
+  because everyone in the first weeks of an export was almost certainly a customer
+  already. Exports of a few weeks don't show "new" at all, and the caption says why.
 - **Customer rankings and card mix** use gross revenue.
 - **The status filter.** Revenue is always Batched-only, so *Successful only*
   mostly serves as a clean view for printing: failure, retry and void sections are
@@ -377,9 +410,15 @@ dependency.
    asserts they match the rendered dashboard: gross, net and refunds to the cent,
    transaction and attempt counts, success rates, top-5/top-10 concentration,
    retry chains and recovery rate, revenue per bucket, **every customer's trend
-   slope**, RFM segment sizes, and the text shown on the tiles. 29/29 checks pass
-   on the sample, and on a real export.
-4. **Edge cases.** A 90-day file buckets weekly, a 5-year file quarterly, a
+   slope**, RFM segment sizes, the timeframe and its KPI comparison windows,
+   year-over-year totals, and the text shown on the tiles. 34/34 checks pass on the
+   sample, on every timeframe fixture and on real exports, with and without
+   customer groups.
+4. **Timeframes and edge cases.** A 3-week file reads as "a few weeks" (daily
+   charts, 7-day comparisons, no "new" split), a 90-day file as "a few months", the
+   12-month sample as "about a year", and 3- and 5-year files as "more than a year"
+   (year-on-year comparisons and the year-over-year chart; quarterly charts at 5
+   years). A
    one-customer file renders (with explanatory empty states where a chart needs
    more customers), the newer 117-column export layout (repeated column names,
    quoted values, year-first dates) renders weekly, and a missing column, an

@@ -151,5 +151,21 @@ removed automatically.
 The dropdown overrides the default. A bucket is **partial** when the selected
 range starts after its first day or ends before its last day (daily buckets are
 never partial). Partial buckets are drawn hatched and marked `*`, and they are
-excluded from period-over-period comparisons, rolling averages, the KPI
-deltas and the momentum analysis.
+excluded from the % change chart and rolling averages.
+
+## Timeframes
+
+Chart buckets only decide how bars are drawn. Comparisons follow a timeframe
+chosen from the same span:
+
+| Timeframe | Span | KPI comparison | Customer tracking | Needs attention baseline | "New" customers |
+|---|---|---|---|---|---|
+| a few weeks | ≤ 45 days | last 7 days vs the 7 before | 7-day blocks counted back from the last day | previous 2 weeks (recent: last 2) | not determined |
+| a few months | 46–183 days | last 28 (or 14, 7) days vs the same before | 7-day blocks | previous 4 weeks (recent: last 4) | first seen after day 35 |
+| about a year | 184–395 days | last complete month vs the previous one | complete months | previous 3 months (recent: last 3) | first seen after day 45 |
+| more than a year | 396+ days | last complete month vs the same month a year earlier | complete months, trend over the last 12 | same 3 months a year earlier | first seen after day 45 |
+
+The % change chart compares each day with the same weekday a week earlier, and
+(more than a year) each month or quarter with the same one a year earlier.
+"Gone quiet" means no successful charge in the last two tracking periods, after
+at least two charges, and a silence longer than twice the customer's usual gap.

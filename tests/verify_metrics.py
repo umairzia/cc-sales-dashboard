@@ -175,28 +175,98 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None) -> int:
     eq("partial buckets", partial, [b["partial"] for b in dash["buckets"]])
     eq("revenue per bucket (cents)", [int(x) for x in rev.values], dash["grossByBucket"])
 
-    # Trend slopes for every eligible named customer (complete buckets only,
-    # from the customer's first bucket; >= 4 buckets with >= 3 active).
-    complete = [i for i, p in enumerate(partial) if not p]
+    # Timeframe profile (span in days, first to last transaction inclusive):
+    # ≤45 short, ≤183 medium, ≤395 long, otherwise multi-year.
+    tf = "short" if span <= 45 else "medium" if span <= 183 else "long" if span <= 395 else "multi"
+    eq("timeframe", tf, dash["timeframe"])
+    named = sales[~sales.one_time]
+
+    # Tracking periods: 7-day blocks counted back from the last day (short,
+    # medium) or complete calendar months (long, multi-year).
+    if tf in ("short", "medium"):
+        k = span // 7
+        bounds = [(hi - pd.Timedelta(days=7 * j + 6), hi - pd.Timedelta(days=7 * j)) for j in range(k - 1, -1, -1)]
+    else:
+        months = pd.period_range(lo.to_period("M"), hi.to_period("M"), freq="M")
+        bounds = [(m.start_time.normalize(), m.end_time.normalize()) for m in months
+                  if m.start_time.normalize() >= lo and m.end_time.normalize() <= hi]
+    eq("tracking periods", len(bounds), dash["trackingPeriods"])
+    starts = pd.DatetimeIndex([b[0] for b in bounds])
+
+    def period_of(day):
+        if not bounds or day < bounds[0][0]:
+            return -1
+        i = int(starts.searchsorted(day, side="right")) - 1
+        return i if day <= bounds[i][1] else len(bounds)
+
+    pidx = named.day.map(period_of)
+    inside = named[(pidx >= 0) & (pidx < len(bounds))]
+    series = {c: np.zeros(len(bounds)) for c in named.cust.unique()}
+    for c, i, v in zip(inside.cust, pidx[inside.index], inside.cents):
+        series[c][i] += v
+
+    # Trend slopes: last 12 months for multi-year exports, otherwise all
+    # periods, from the customer's first period; short exports need 3 periods
+    # with 2 active, the rest 4 with 3 active.
+    need, need_active = (3, 2) if tf == "short" else (4, 3)
+    t0 = max(0, len(bounds) - 12) if tf == "multi" else 0
+    first_day = named.groupby("cust").day.min()
     mine = {}
-    if len(complete) >= 4:
-        c0, c1 = complete[0], complete[-1]
-        named = sales[~sales.one_time]
-        mat = named.groupby([named.cust, named.day.dt.to_period(freq)]).cents.sum().unstack(fill_value=0).reindex(columns=periods, fill_value=0)
-        for cust, row in mat.iterrows():
-            first = int(np.argmax(row.values > 0))
-            start = max(c0, first)
-            ys = row.values[start:c1 + 1].astype(float)
-            if len(ys) < 4 or (ys > 0).sum() < 3:
+    if len(bounds) - t0 >= need:
+        for cust, ys_all in series.items():
+            f = period_of(first_day[cust])
+            if f >= len(bounds):
+                continue
+            ys = ys_all[max(t0, f, 0):]
+            if len(ys) < need or (ys > 0).sum() < need_active:
                 continue
             mine[cust] = np.polyfit(np.arange(len(ys)), ys, 1)[0] / 100
     theirs = dash["slopes"]
     eq("customers with a trend slope", sorted(mine), sorted(theirs))
     worst = max((abs(mine[k] - theirs.get(k, np.inf)) for k in mine), default=0.0)
-    eq("max |slope difference| ($/bucket)", round(worst, 9), 0.0, 1e-6)
+    eq("max |slope difference| ($/period)", round(worst, 9), 0.0, 1e-6)
     if mine:
         sample = max(mine, key=lambda k: by_cust.get(k, 0))
         eq(f"slope for {sample!r}", mine[sample], theirs.get(sample), 1e-6)
+
+    # KPI comparison windows: last 7 days vs previous 7 (short); last 28/14/7
+    # vs the same before (medium, the longest that fits twice); last complete
+    # month vs previous (long) or vs the same month a year earlier (multi).
+    def gross_between(a, b):
+        return int(sales[(sales.day >= a) & (sales.day <= b)].cents.sum())
+    cmp = None
+    if tf in ("short", "medium"):
+        w = next((d for d in ([7] if tf == "short" else [28, 14, 7]) if 2 * d <= span), None)
+        if w:
+            a = (hi - pd.Timedelta(days=w - 1), hi)
+            b = (hi - pd.Timedelta(days=2 * w - 1), hi - pd.Timedelta(days=w))
+            cmp = (a, b)
+    else:
+        whole = [m for m in pd.period_range(lo.to_period("M"), hi.to_period("M"), freq="M")
+                 if m.start_time.normalize() >= lo and m.end_time.normalize() <= hi]
+        if len(whole) >= 2:
+            last = whole[-1]
+            ago = last - 12
+            other = ago if tf == "multi" and ago in whole else whole[-2]
+            cmp = ((last.start_time.normalize(), last.end_time.normalize()), (other.start_time.normalize(), other.end_time.normalize()))
+    if cmp:
+        (a0, a1), (b0, b1) = cmp
+        iso = lambda d: d.strftime("%Y-%m-%d")
+        eq("KPI comparison windows", [[iso(a0), iso(a1)], [iso(b0), iso(b1)]], [dash["compare"]["a"], dash["compare"]["b"]])
+        eq("KPI comparison gross (cents)", [gross_between(a0, a1), gross_between(b0, b1)], [dash["compare"]["cur"], dash["compare"]["prev"]])
+    else:
+        eq("KPI comparison", None, dash["compare"])
+
+    # Year over year (multi-year only): totals of complete calendar years.
+    if tf == "multi":
+        whole = {m: int(sales[sales.day.dt.to_period("M") == m].cents.sum())
+                 for m in pd.period_range(lo.to_period("M"), hi.to_period("M"), freq="M")
+                 if m.start_time.normalize() >= lo and m.end_time.normalize() <= hi}
+        years = sorted({m.year for m in pd.period_range(lo.to_period("M"), hi.to_period("M"), freq="M")})
+        mine_y = {y: (sum(v for m, v in whole.items() if m.year == y) if sum(1 for m in whole if m.year == y) == 12 else None) for y in years}
+        eq("year-over-year totals (cents)", mine_y, {y["year"]: y["total"] for y in dash["yoy"]})
+    else:
+        eq("year-over-year view", None, dash["yoy"])
 
     # RFM: quartiles of rank(method='first'), customers ordered by name.
     if by_cust.size >= 4:

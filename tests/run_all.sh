@@ -27,15 +27,19 @@ if [ -n "$hits" ]; then echo "$hits"; fails=$((fails + 1)); else echo "PASS  0 e
 grep -q "connect-src 'none'" dashboard.html && echo "PASS  Content-Security-Policy blocks all network requests" || { echo "FAIL  CSP missing"; fails=$((fails + 1)); }
 
 step "Browser: synthetic 12-month sample (file://, offline, every control exercised, PDF)"
-run node tests/e2e.mjs sample-data/sample_transactions.csv --out "$OUT" --name sample --expect-unit month --interact --pdf
+run node tests/e2e.mjs sample-data/sample_transactions.csv --out "$OUT" --name sample --expect-unit month --expect-timeframe long --interact --pdf
 run python3 tests/verify_metrics.py sample-data/sample_transactions.csv "$OUT/sample.json"
 run node tests/e2e.mjs sample-data/sample_transactions.csv --out "$OUT" --name sample_grouped --groups tests/fixtures/sample_customer_groups.csv
 run python3 tests/verify_metrics.py sample-data/sample_transactions.csv "$OUT/sample_grouped.json" --groups tests/fixtures/sample_customer_groups.csv
 
-step "Browser: edge cases"
-run node tests/e2e.mjs tests/fixtures/span_90_days.csv --out "$OUT" --expect-unit week --interact
+step "Browser: timeframes (3 weeks, 3 months, 3 years, 5 years) and edge cases"
+run node tests/e2e.mjs tests/fixtures/span_3_weeks.csv --out "$OUT" --expect-unit day --expect-timeframe short --interact
+run python3 tests/verify_metrics.py tests/fixtures/span_3_weeks.csv "$OUT/span_3_weeks.json"
+run node tests/e2e.mjs tests/fixtures/span_3_years.csv --out "$OUT" --expect-unit month --expect-timeframe multi --interact
+run python3 tests/verify_metrics.py tests/fixtures/span_3_years.csv "$OUT/span_3_years.json"
+run node tests/e2e.mjs tests/fixtures/span_90_days.csv --out "$OUT" --expect-unit week --expect-timeframe medium --interact
 run python3 tests/verify_metrics.py tests/fixtures/span_90_days.csv "$OUT/span_90_days.json"
-run node tests/e2e.mjs tests/fixtures/span_5_years.csv --out "$OUT" --expect-unit quarter --interact
+run node tests/e2e.mjs tests/fixtures/span_5_years.csv --out "$OUT" --expect-unit quarter --expect-timeframe multi --interact
 run python3 tests/verify_metrics.py tests/fixtures/span_5_years.csv "$OUT/span_5_years.json"
 run node tests/e2e.mjs tests/fixtures/export_2026_layout.csv --out "$OUT" --expect-unit week --interact
 run python3 tests/verify_metrics.py tests/fixtures/export_2026_layout.csv "$OUT/export_2026_layout.json"

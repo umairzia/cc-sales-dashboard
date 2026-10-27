@@ -137,7 +137,8 @@ def build_customers(rng: random.Random, n: int, start: date, end: date) -> list[
         kind = rng.random()
         every = 3.5 if kind < 0.015 else 7 if kind < 0.19 else 14 if kind < 0.50 else 30 if kind < 0.82 else rng.uniform(45, 90)
         late = rng.random() < 0.22
-        s = start + timedelta(days=rng.randint(20, int(span * 0.8))) if late else start + timedelta(days=rng.randint(0, 6))
+        lo = min(20, span // 3)  # 20 days in for any export of 60+ days
+        s = start + timedelta(days=rng.randint(lo, max(lo, int(span * 0.8)))) if late else start + timedelta(days=rng.randint(0, 6))
         stop = end
         if rng.random() < 0.09:
             stop = start + timedelta(days=rng.randint(int(span * 0.45), int(span * 0.85)))
@@ -406,6 +407,21 @@ def fixtures(dirpath: Path) -> None:
                 cells.append(q(r[h]))
         lines.append(",".join(cells))
     (dirpath / "export_2026_layout.csv").write_text("\ufeff" + "\r\n".join(lines) + "\r\n", encoding="utf-8", newline="")
+
+    # Three weeks of transactions (short export) and three years (multi-year,
+    # with a seasonal summer peak and one account that declines year on year).
+    start, end = date(2025, 10, 6), date(2025, 11, 1)
+    custs = build_customers(rng, 70, start, end)
+    write_csv(dirpath / "span_3_weeks.csv", HEADER, export_rows(rng, simulate(rng, custs, start, end)))
+    start, end = date(2023, 1, 2), date(2025, 12, 31)
+    custs = build_customers(rng, 45, start, end)
+    calibrate(custs, end, target_rows=3200)
+    custs[0].trend, custs[0].start, custs[0].stop = -0.7, start, end
+    txns = simulate(rng, custs, start, end)
+    for t in txns:  # seasonality: patios open in summer, quiet January
+        m = t.when.month
+        t.cents = int(t.cents * (1.25 if m in (6, 7, 8) else 0.8 if m == 1 else 1.0))
+    write_csv(dirpath / "span_3_years.csv", HEADER, export_rows(rng, txns))
     print(f"wrote fixtures to {dirpath.relative_to(ROOT)}")
 
 

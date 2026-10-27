@@ -343,11 +343,49 @@
     }, 'Diverging bar chart of percent change in revenue from the previous period');
   }
 
+  /** One line per calendar year across Jan–Dec. Colour follows the year's
+   *  recency: this year accent, last year slot 2, the year before slot 3,
+   *  anything older a muted grey. */
+  function yoy(a, t) {
+    const MONTHS = window.CCMetrics.MONTHS;
+    const years = a.yoy.years;
+    const colors = [t.accent, t.series2, t.series3];
+    return make('yoy', {
+      type: 'line',
+      data: {
+        labels: MONTHS,
+        datasets: years.map((y, i) => {
+          const rank = years.length - 1 - i;
+          const col = colors[rank] || t.neutralMark;
+          return {
+            label: String(y.year) + (y.complete ? '' : ' (part)'), data: y.months.map((v) => (v == null ? null : v / 100)),
+            borderColor: col, backgroundColor: col, borderWidth: rank === 0 ? 2.5 : 2, pointRadius: 3, pointHoverRadius: 5,
+            pointBorderWidth: 2, pointBorderColor: t.surface, tension: 0.25, spanGaps: false, order: rank,
+          };
+        }),
+      },
+      options: {
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+          x: { grid: { display: false }, border: { color: t.axis }, ticks: ticks(t) },
+          y: { beginAtZero: true, grid: gridOpts(t), border: { display: false }, ticks: ticks(t, { callback: (v) => Fmt.compact(v), maxTicksLimit: 6 }), title: axisTitle('Revenue', t) },
+        },
+        plugins: {
+          legend: { labels: { usePointStyle: true } },
+          tooltip: { callbacks: { label: (ctx) => ' ' + ctx.dataset.label + ': ' + (ctx.raw == null ? 'n/a' : Fmt.money(ctx.raw)) } },
+        },
+      },
+    }, 'Line chart of revenue per month with one line per year');
+  }
+
   // ---------------------------------------------------------------------------
   // D. Momentum
   // ---------------------------------------------------------------------------
   function slopes(list, t, unitNoun, boxEl) {
     const maxAbs = Math.max(...list.map((x) => Math.abs(x.slope)), 1);
+    // Explicit range with room for the value labels on both ends.
+    const lo = Math.min(0, ...list.map((x) => x.slope)), hi = Math.max(0, ...list.map((x) => x.slope));
+    const pad = Math.max(hi - lo, 1) * 0.42;
     const color = (s) => {
       const k = 0.18 + 0.82 * Math.min(1, Math.abs(s) / maxAbs);
       return s >= 0 ? mix(t.surface, t.goodDeep, k) : mix(t.surface, t.badDeep, k);
@@ -364,7 +402,7 @@
         indexAxis: 'y',
         layout: { padding: { left: 4, right: 4 } },
         scales: {
-          x: { grace: '32%', grid: gridOpts(t, true), border: { display: false }, ticks: ticks(t, { callback: (v) => Fmt.signedMoney(v), maxTicksLimit: 7, maxRotation: 0 }), title: axisTitle('Revenue change per ' + unitNoun + ' (linear trend)', t), position: 'top' },
+          x: { min: lo < 0 ? lo - pad : 0, max: hi > 0 ? hi + pad : 0, grid: gridOpts(t, true), border: { display: false }, ticks: ticks(t, { callback: (v) => Fmt.signedMoney(v), maxTicksLimit: 7, maxRotation: 0 }), title: axisTitle('Revenue change per ' + unitNoun + ' (linear trend)', t), position: 'top' },
           y: { grid: { display: false }, border: { display: false }, ticks: ticks(t, { autoSkip: false, callback: function (v) { return nameTick(26)(this.getLabelForValue(v)); }, font: { size: 11.5 } }) },
         },
         plugins: {
@@ -518,14 +556,15 @@
   // ---------------------------------------------------------------------------
   function acquisition(a, t) {
     const labels = a.buckets.map((b) => b.short + (b.partial ? '*' : ''));
+    const existingLabel = a.acq.newKnown ? 'Returning customers' : 'Active customers';
     return make('acq', {
       data: {
         labels,
         datasets: [
-          { type: 'bar', label: 'Returning customers', data: a.acq.returning, backgroundColor: t.accent, stack: 'c', order: 2, maxBarThickness: 34, borderSkipped: 'start' },
-          { type: 'bar', label: 'New customers', data: a.acq.newC, backgroundColor: t.series2, stack: 'c', order: 2, maxBarThickness: 34, borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: 'start' },
+          { type: 'bar', label: existingLabel, data: a.acq.returning, backgroundColor: t.accent, stack: 'c', order: 2, maxBarThickness: 34, borderSkipped: 'start', borderRadius: a.acq.newKnown ? 0 : { topLeft: 4, topRight: 4 } },
+          a.acq.newKnown ? { type: 'bar', label: 'New customers', data: a.acq.newC, backgroundColor: t.series2, stack: 'c', order: 2, maxBarThickness: 34, borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: 'start' } : null,
           { type: 'line', label: 'Cumulative unique customers', data: a.acq.cumulative, borderColor: t.text, backgroundColor: t.text, borderWidth: 2, pointRadius: 3, pointBorderWidth: 2, pointBorderColor: t.surface, stack: 'cum', order: 1, tension: 0.2, pointStyle: 'circle' },
-        ],
+        ].filter(Boolean),
       },
       options: {
         interaction: { mode: 'index', intersect: false },
@@ -592,7 +631,7 @@
   root.CCFormat = Fmt;
   root.CCCharts = {
     theme, configure, destroy, destroyAll, setEmpty, make, mix, alpha, hatch, setNameNote,
-    revenue, pop, slopes, hbar, pareto, cadence, rfmBar, acquisition, cardMix, cardFail, cardColor, segColors,
+    revenue, pop, yoy, slopes, hbar, pareto, cadence, rfmBar, acquisition, cardMix, cardFail, cardColor, segColors,
     registry,
   };
 })(window);

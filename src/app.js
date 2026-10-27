@@ -245,8 +245,24 @@
       action ? el('button', { type: 'button', class: 'btn small', onclick: action.onclick }, action.label) : null);
   }
 
+  /** One line explaining how this much history is analysed. */
+  function timeframeText(a) {
+    const tf = a.timeframe, mo = a.momentum;
+    const days = plural(a.spanDays, 'day');
+    const cmp = !a.deltas ? 'there is not yet enough history for the tiles to compare two periods'
+      : a.deltas.kind === 'yoy' ? 'the tiles compare the last complete month with the same month a year earlier'
+      : a.deltas.kind === 'month' ? 'the tiles compare the last complete month with the month before'
+      : 'the tiles compare the ' + a.deltas.label.replace(/^Last /, 'last ').replace(' vs ', ' with the ');
+    const track = tf.period === 'week' ? 'customers are tracked week by week (7-day blocks counted back from ' + fmtDay(a.to) + ')'
+      : 'customers are tracked month by month' + (tf.trendMax ? ', with trends over the last 12 months and the baseline taken from the same months a year earlier' : '');
+    const fresh = a.acq.newKnown ? 'customers first seen in the first ' + plural(a.acq.warmupDays, 'day') + ' count as existing customers, not new ones'
+      : 'new and existing customers can’t be told apart yet (some regulars only order monthly)';
+    return 'This export covers ' + days + ' (' + tf.label + '), so ' + cmp + '; ' + track + '; and ' + fresh + '. Charts are grouped by ' + a.unit + '.';
+  }
+
   function renderNotices(a) {
     const box = clear($('notices'));
+    box.append(notice('info', timeframeText(a)));
     const q = state.quality;
     const pend = pendingSuggestions();
     if (pend.length) {
@@ -262,10 +278,10 @@
     if (partial.length && a.unit !== 'day') {
       const n = noun();
       box.append(notice('info', partial.map((b) => b.short).join(' and ') + (partial.length > 1 ? ' are partial ' + n + 's' : ' is a partial ' + n) +
-        ' (the selected range starts ' + fmtDay(a.from) + ' and ends ' + fmtDay(a.to) + '). Partial ' + n + 's are hatched in the charts and left out of comparisons, trends and the change figures on the tiles. ' +
-        'If your export covers the whole ' + n + ', set From/To to its first and last day.'));
+        ' (the selected range starts ' + fmtDay(a.from) + ' and ends ' + fmtDay(a.to) + '). They are hatched in the charts and skipped in the % change chart' +
+        (a.timeframe.period === 'week' ? '; the tiles and customer tracking use complete 7-day blocks, so they are not affected.' : '; the tiles and customer tracking use complete months only.') +
+        (n === 'month' || n === 'quarter' ? ' If your export covers the whole ' + n + ', set From/To to its first and last day.' : '')));
     }
-    if (a.complete.length < 2) box.append(notice('warn', 'Fewer than two complete ' + noun() + 's in this range, so period-over-period changes are unavailable. Try a finer grouping.'));
     if (a.buckets.length > 400) box.append(notice('warn', a.buckets.length + ' periods is a lot to chart. Try a coarser grouping.'));
     if (state.status === 'success') box.append(notice('info', 'Showing successful charges only. Success rate, retries, failures and voids are hidden.'));
   }
@@ -278,7 +294,8 @@
     const box = clear($('kpis'));
     const na = state.status === 'success';
     const tiles = [
-      { key: 'gross', hero: true, label: 'Gross revenue', value: F.money(T.gross / 100), sub: 'Successful charges, before refunds', up: true },
+      { key: 'gross', hero: true, label: 'Gross revenue', value: F.money(T.gross / 100), up: true,
+        sub: 'Before refunds · ≈ ' + (a.timeframe.period === 'week' ? F.money(a.runRate.perWeek / 100) + ' per week' : F.money(a.runRate.perMonth / 100) + ' per month') },
       { key: 'net', label: 'Net revenue', value: F.money(T.net / 100), sub: T.refundCount ? 'After ' + F.money(T.refunds / 100) + ' in ' + plural(T.refundCount, 'refund') : 'No refunds in this period', up: true },
       { key: 'count', label: 'Transactions', value: F.int(T.count), sub: na ? 'Successful charges' : 'Successful charges · ' + F.int(T.attempts) + ' attempts', up: true },
       { key: 'avg', label: 'Average transaction', value: F.money(T.avg / 100), sub: 'Gross revenue ÷ successful charges', up: true },
@@ -300,16 +317,16 @@
   function deltaNode(a, tile, hidden) {
     const d = el('div', { class: 'kpi-delta' });
     if (hidden) return d;
-    if (!a.deltas) { d.append(el('span', { class: 'chg na', text: '—' }), el('span', { class: 'vs', text: 'needs 2 complete ' + noun() + 's' })); return d; }
+    if (!a.deltas) { d.append(el('span', { class: 'chg na', text: '—' }), el('span', { class: 'vs', text: 'not enough history to compare' })); return d; }
     const v = a.deltas.values[tile.key];
-    const vs = el('span', { class: 'vs', text: a.deltas.lastLabel + ' vs ' + a.deltas.prevLabel });
+    const vs = el('span', { class: 'vs', text: a.deltas.label });
     if (!v || v.change == null) { d.append(el('span', { class: 'chg na', text: 'n/a' }), vs); return d; }
     const c = v.change;
     const flat = Math.abs(c) < 0.0005;
     const good = (c > 0) === tile.up;
     const arrow = flat ? '●' : c > 0 ? '▲' : '▼';
     const txt = v.kind === 'pp' ? F.pp(c) : F.signedPct(c);
-    d.title = 'Last complete ' + noun() + ' (' + a.deltas.lastLabel + ') compared with the one before (' + a.deltas.prevLabel + ')';
+    d.title = a.deltas.title;
     d.append(el('span', { class: 'chg ' + (flat ? 'flat' : good ? 'good' : 'bad'), text: arrow + ' ' + txt }), vs);
     return d;
   }
@@ -336,24 +353,52 @@
     if (a.series.hi != null) cap.append(' Highest complete ' + n + ': ' + a.buckets[a.series.hi].short + ' (' + F.money(a.series.gross[a.series.hi] / 100) + '); lowest: ' + a.buckets[a.series.lo].short + ' (' + F.money(a.series.gross[a.series.lo] / 100) + ').');
     if (a.buckets.some((b) => b.partial)) cap.append(' Hatched bars (*) are partial ' + n + 's.');
 
-    if (a.series.pop.every((x) => x == null)) C.setEmpty('pop', 'Needs at least two consecutive complete ' + n + 's.');
+    const against = a.popLag === 7 ? 'the same weekday a week earlier' : a.popLag === 12 ? 'the same month a year earlier' : a.popLag === 4 ? 'the same quarter a year earlier' : 'the ' + n + ' before';
+    $('t-pop').textContent = 'Change vs ' + against;
+    $('s-pop').textContent = 'Percent change in revenue for each ' + n + ' compared with ' + against;
+    if (a.series.pop.every((x) => x == null)) C.setEmpty('pop', 'Not enough history yet to compare each ' + n + ' with ' + against + '.');
     else C.pop(a, t);
     const vals = a.series.pop.filter((x) => x != null);
     const up = vals.filter((x) => x > 0).length;
-    $('cap-pop').textContent = 'Green bars above zero (▲) mean revenue grew compared with the ' + n + ' before; red bars below zero (▼) mean it shrank. A run of red bars is a slowdown even when the level still looks healthy. ' +
-      up + ' of ' + vals.length + ' ' + n + '-to-' + n + ' comparisons were up.' + (a.buckets.some((b) => b.partial) ? ' Comparisons involving a partial ' + n + ' are skipped.' : '');
+    const why = a.popLag === 7 ? ' Each day is compared with the same weekday, because a quiet Sunday would otherwise look like a collapse.'
+      : a.popLag === 12 || a.popLag === 4 ? ' With more than a year of data the comparison is year on year, so a seasonal summer peak or January dip doesn’t look like growth or a slowdown.' : '';
+    $('cap-pop').textContent = 'Green bars above zero (▲) mean revenue grew compared with ' + against + '; red bars below zero (▼) mean it shrank. A run of red bars is a slowdown even when the level still looks healthy.' + why + ' ' +
+      up + ' of ' + vals.length + ' comparisons were up.' + (a.buckets.some((b) => b.partial) ? ' Comparisons involving a partial ' + n + ' are skipped.' : '');
+    renderYoY(a, t);
+  }
+
+  /** Year over year: only for exports covering more than a year. */
+  function renderYoY(a, t) {
+    const card = $('card-yoy');
+    card.hidden = !a.yoy;
+    if (!a.yoy) { C.destroy('yoy'); return; }
+    C.yoy(a, t);
+    const tbl = clear($('tbl-yoy'));
+    const years = a.yoy.years;
+    tbl.append(table([
+      { key: 'year', label: 'Year', fmt: (r) => String(r.year) },
+      { key: 'total', label: 'Revenue', num: true, fmt: (r) => r.complete ? F.money(r.total / 100) : 'partial year', sort: (r) => r.total || 0 },
+      { key: 'change', label: 'vs previous year', num: true, fmt: (r) => r.change == null ? '—' : el('span', { class: r.change >= 0 ? 'pos' : 'neg', text: (r.change >= 0 ? '▲ ' : '▼ ') + F.signedPct(r.change) }), sort: (r) => r.change == null ? -Infinity : r.change },
+    ], years.slice().reverse(), {}));
+    const y = a.yoy.ytd;
+    const cap = clear($('cap-yoy'));
+    cap.append('Each line is one calendar year, so the same month can be compared across years and seasonal patterns stand out. Partial months at the start or end of the export are left out. ');
+    if (y && y.change != null) {
+      const span = y.months.length === 12 ? 'Full year ' + y.year : y.year + ' to date (' + y.months[0] + '–' + y.months[y.months.length - 1] + ')';
+      cap.append(el('strong', { text: span + ': ' + F.money(y.cur / 100) + ', ' + (y.change >= 0 ? '▲ ' : '▼ ') + F.signedPct(y.change) }), ' vs the same months of ' + y.prevYear + ' (' + F.money(y.prev / 100) + ').');
+    }
   }
 
   // ---------------------------------------------------------------------------
   // D. Momentum
   // ---------------------------------------------------------------------------
   function renderMomentum(a, t) {
-    const n = noun(), mo = a.momentum;
+    const mo = a.momentum, n = mo.periodNoun;
     const box = $('box-slopes');
-    $('s-slopes').textContent = 'Linear trend of each customer’s revenue per complete ' + n + ', from their first ' + n + ' with us (at least 4 ' + n + 's, 3 of them active)';
+    $('s-slopes').textContent = 'Linear trend of each customer’s revenue per ' + n + (mo.trendFrom ? ', ' + mo.trendFrom + ' to ' + mo.trendTo : '') + ', from their first ' + n + ' with us (at least ' + mo.needTrend + ' ' + n + 's with purchases in most of them)';
     const toggle = $('slopesToggle');
-    if (mo.completeCount < 4) {
-      C.setEmpty('slopes', 'Needs at least 4 complete ' + n + 's. Choose a longer period or a finer grouping.');
+    if (mo.periods < mo.needTrend) {
+      C.setEmpty('slopes', 'Needs at least ' + mo.needTrend + ' full ' + n + 's of data; this export has ' + mo.periods + '. Load a longer export to see customer trends.');
       toggle.hidden = true;
       $('cap-slopes').textContent = '';
     } else if (!mo.slopes.length) {
@@ -384,10 +429,10 @@
     const qbox = clear($('tbl-quiet'));
     if (mo.quietSince == null) {
       $('s-quiet').textContent = '';
-      qbox.append(el('p', { class: 'empty-row', text: 'Needs at least 3 complete ' + n + 's.' }));
+      qbox.append(el('p', { class: 'empty-row', text: 'Needs at least 3 full ' + n + 's of data; this export has ' + mo.periods + '.' }));
       $('cap-quiet').textContent = '';
     } else {
-      $('s-quiet').textContent = 'No successful charge in ' + mo.quietLabels.join(' or ') + ' (or since), after at least 2 charges before that · biggest accounts first';
+      $('s-quiet').textContent = 'No successful charge in ' + mo.quietLabels.join(' or ') + ' (or since), after at least 2 charges before, and silent for more than twice their usual gap · biggest accounts first';
       qbox.append(table([
         { key: 'name', label: 'Customer', name: true, fmt: (r) => nameCell(r.name) },
         { key: 'gross', label: 'Lifetime revenue', num: true, fmt: (r) => F.money(r.gross) },
@@ -401,17 +446,17 @@
   }
 
   function renderAttention(a) {
-    const n = noun(), mo = a.momentum;
+    const mo = a.momentum, n = mo.periodNoun;
     const box = clear($('tbl-attention'));
     if (!mo.window) {
       $('s-attention').textContent = '';
-      box.append(el('p', { class: 'empty-row', text: 'Needs at least 6 complete ' + n + 's (3 baseline + 3 recent). Choose a longer period or a finer grouping.' }));
+      box.append(el('p', { class: 'empty-row', text: 'Needs at least 2 full ' + n + 's of data to compare recent spending with a baseline.' }));
       $('cap-attention').textContent = '';
       return;
     }
     const w = mo.window;
-    const range = (arr) => arr[0] + '–' + arr[arr.length - 1];
-    $('s-attention').textContent = 'Recent = average revenue per ' + n + ' in ' + range(w.recent) + '; baseline = ' + range(w.base) + '. Listed when recent is at least ' + Math.round(state.threshold * 100) + '% below baseline.';
+    $('s-attention').textContent = 'Recent = average revenue per ' + n + ' in ' + w.recent + '; baseline = ' + w.base + (w.kind === 'yoy' ? ' (the same months a year earlier, so seasonal swings don’t count)' : '') +
+      '. Listed when recent is at least ' + Math.round(state.threshold * 100) + '% below baseline.';
     box.append(table([
       { key: 'name', label: 'Customer', name: true, fmt: (r) => nameCell(r.name) },
       { key: 'baseAvg', label: 'Baseline', num: true, fmt: (r) => F.money(r.baseAvg) },
@@ -422,7 +467,8 @@
     ], mo.attention, { sort: { key: 'gap', dir: -1 }, empty: 'No customer’s recent average is ' + Math.round(state.threshold * 100) + '% or more below their baseline.', good: true }));
     const total = mo.attention.reduce((s, r) => s + r.gap, 0);
     $('cap-attention').textContent = mo.attention.length
-      ? plural(mo.attention.length, 'customer') + (mo.attention.length === 1 ? ' is' : ' are') + ' spending ' + F.money(total) + ' less per ' + n + ' than their baseline, in total. Shortfall = baseline − recent, per ' + n + '. Sorted by shortfall; click a column header to re-sort.'
+      ? plural(mo.attention.length, 'customer') + (mo.attention.length === 1 ? ' is' : ' are') + ' spending ' + F.money(total) + ' less per ' + n + ' than their baseline, in total. Shortfall = baseline − recent, per ' + n + '. Sorted by shortfall; click a column header to re-sort.' +
+        (w.recentN === 1 && n === 'week' ? ' With only a few weeks of data one late order is enough to appear here; check Days since before calling.' : '')
       : '';
   }
 
@@ -458,16 +504,17 @@
       (c.n80 ? ', and ' + c.n80 + ' of ' + c.customers + ' customers make up 80% of revenue.' : '.') + (a.oneTime ? ' One-Time Manual Charge is placed last because it is not a single account.' : '');
 
     // Average per active bucket
-    $('t-perActive').textContent = 'Average revenue per active ' + n;
-    $('s-perActive').textContent = 'Top 20 · revenue ÷ ' + n + 's with at least one successful charge';
+    const an = a.perActiveNoun;
+    $('t-perActive').textContent = 'Average revenue per active ' + an;
+    $('s-perActive').textContent = 'Top 20 · revenue ÷ ' + an + 's with at least one successful charge';
     if (!a.perActive.length) C.setEmpty('perActive', 'No successful charges in this period.');
     else C.hbar('perActive', a.perActive, t, {
-      box: $('box-perActive'), label: 'Average per active ' + n, color: t.accent, value: (x) => x.avg / 100, axis: 'Average revenue per active ' + n,
+      box: $('box-perActive'), label: 'Average per active ' + an, color: t.accent, value: (x) => x.avg / 100, axis: 'Average revenue per active ' + an,
       tick: (v) => F.compact(v), labelFmt: (v) => F.compact(v),
-      tooltip: (x) => [' ' + F.money(x.avg / 100) + ' per active ' + n, ' Active in ' + plural(x.active, n)],
+      tooltip: (x) => [' ' + F.money(x.avg / 100) + ' per active ' + an, ' Active in ' + plural(x.active, an)],
       aria: 'Horizontal bar chart of average revenue per active period, top 20 customers',
     });
-    $('cap-perActive').textContent = 'Shows how big each customer is when they do buy. It divides by the ' + n + 's they were actually active, so a customer who joined late isn’t averaged over ' + n + 's before they started.' +
+    $('cap-perActive').textContent = 'Shows how big each customer is when they do buy. It divides by the ' + an + 's they were actually active, so a customer who joined late isn’t averaged over ' + an + 's before they started.' +
       (a.perActive.some((x) => x.oneTime) ? ' † One-Time Manual Charge is an aggregate, not a customer.' : '');
 
     // Cadence
@@ -562,14 +609,18 @@
     const cum = a.acq.cumulative;
     const c = a.complete;
     const cap = clear($('cap-acq'));
-    cap.append('Orange = customers making their first purchase in this export; blue = customers who had bought before. The line is the running count of unique customers: if it flattens while the bars hold steady, the base is churning sideways rather than growing. ');
-    cap.append('Everyone in the first ' + n + ' counts as new, because the export has no earlier history. ');
-    if (c.length >= 2) {
-      const lastC = c[c.length - 1];
-      const half = Math.max(1, Math.floor(c.length / 2));
-      const recentNew = c.slice(-half).reduce((s, i) => s + a.acq.newC[i], 0);
-      cap.append(el('strong', { text: recentNew + ' new customers' }), ' in the last ' + half + ' complete ' + n + 's; ' + cum[cum.length - 1] + ' unique customers in total; ' + (a.acq.newC[lastC] + a.acq.returning[lastC]) + ' active in ' + a.buckets[lastC].short + '.');
+    const totalNew = a.acq.newC.reduce((x, y) => x + y, 0);
+    if (!a.acq.newKnown) {
+      cap.append('Bars show customers with a successful charge in each ' + n + '; the line is the running count of unique customers. ');
+      cap.append(el('strong', { text: 'A few weeks of data can’t show which customers are new' }), ': most customers order every 1–2 weeks but some only monthly, so a regular can appear for the first time late in a short export. Load at least two months to see new customers. ');
+      cap.append(cum[cum.length - 1] + ' unique customers in total.');
+    } else {
+      cap.append('Orange = new customers; blue = existing customers. The line is the running count of unique customers: if it flattens while the bars hold steady, the base is churning sideways rather than growing. ');
+      cap.append('An export starts part-way through every relationship, so the ' + plural(a.acq.existingAtStart, 'customer') + ' first seen in the first ' + plural(a.acq.warmupDays, 'day') +
+        ' count as existing customers; “new” means a first purchase after that. ');
+      cap.append(el('strong', { text: plural(totalNew, 'new customer') }), ' in this export; ' + cum[cum.length - 1] + ' unique customers in total.');
     }
+    if (c.length) { const lastC = c[c.length - 1]; cap.append(' ' + (a.acq.newC[lastC] + a.acq.returning[lastC]) + ' active in ' + a.buckets[lastC].short + '.'); }
   }
 
   // ---------------------------------------------------------------------------
@@ -851,6 +902,10 @@
         rfmSegments: a.rfm ? Object.fromEntries(a.rfm.segments.map((s) => [s.name, s.count])) : null,
         attention: a.momentum.attention.map((x) => x.name), quiet: a.momentum.quiet.map((x) => x.name),
         duplicates: a.duplicates.length,
+        timeframe: a.timeframe.key, popLag: a.popLag, trackedBy: a.momentum.periodNoun, trackingPeriods: a.momentum.periods,
+        compare: a.deltas ? { kind: a.deltas.kind, label: a.deltas.label, a: a.deltas.a.map(M.isoDate), b: a.deltas.b.map(M.isoDate), cur: a.deltas.values.gross.cur, prev: a.deltas.values.gross.prev } : null,
+        attentionWindow: a.momentum.window || null, quietCount: a.momentum.quiet.length, newCustomers: a.acq.newC.reduce((x, y) => x + y, 0),
+        yoy: a.yoy ? a.yoy.years.map((y) => ({ year: y.year, total: y.total, months: y.months })) : null,
         groups: { namesGrouped: [...state.members.values()].reduce((n, l) => n + l.length, 0), customers: state.members.size, pending: pendingSuggestions().length, suggested: state.suggestions.map((x) => ({ name: x.name, members: x.members.map(G.display) })), manualAssigned: state.manualAssigned || 0 },
         quality: { parsed: state.quality.parsed, total: state.quality.totalDataRows, blankCustomer: state.quality.blankCustomer, blankStatus: state.quality.blankStatus, negative: state.quality.negative.length, zero: state.quality.zero.length, badDate: state.quality.badDate.length },
         kpiText: Array.from(document.querySelectorAll('.kpi')).map((k) => ({ key: k.dataset.kpi, value: k.querySelector('.kpi-value').textContent, delta: k.querySelector('.kpi-delta').textContent })),

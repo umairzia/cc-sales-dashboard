@@ -95,6 +95,49 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Timeframe profiles. The chart grouping (above) only decides how bars are
+  // drawn; the profile decides what each comparison means for this much
+  // history, so a 3-week, 3-month or 3-year export each gets the version of
+  // every metric that is meaningful for it. Calibrated on real exports: about
+  // 75% of customers order at least every 14 days and ~95% at least every 35,
+  // so customer tracking never uses periods shorter than a week, short exports
+  // compare two weeks with two weeks, and "new customer" needs a 35–45 day
+  // settling-in window (which a few weeks of data can't provide).
+  // ---------------------------------------------------------------------------
+  const TIMEFRAMES = [
+    { key: 'short', maxDays: 45, label: 'a few weeks', period: 'week', compare: 'trailing', compareDays: [7],
+      recent: 2, base: 2, trendMin: 3, trendActive: 2, warmupDays: null },
+    { key: 'medium', maxDays: 183, label: 'a few months', period: 'week', compare: 'trailing', compareDays: [28, 14, 7],
+      recent: 4, base: 4, trendMin: 4, trendActive: 3, warmupDays: 35 },
+    { key: 'long', maxDays: 395, label: 'about a year', period: 'month', compare: 'month',
+      recent: 3, base: 3, trendMin: 4, trendActive: 3, warmupDays: 45 },
+    { key: 'multi', maxDays: Infinity, label: 'more than a year', period: 'month', compare: 'yoy', yoy: true,
+      recent: 3, base: 3, trendMin: 4, trendActive: 3, trendMax: 12, warmupDays: 45 },
+  ];
+  const timeframeOf = (spanDays) => TIMEFRAMES.find((t) => spanDays <= t.maxDays);
+  const dayShort = (day) => { const t = ymd(day); return t.d + ' ' + MONTHS[t.m]; };
+  const dayRange = (lo, hi) => (ymd(lo).m === ymd(hi).m ? ymd(lo).d + '–' + dayShort(hi) : dayShort(lo) + '–' + dayShort(hi));
+
+  /** Periods used to track customers: 7-day windows counted back from the
+   *  last day of the range (every one complete), or complete calendar months. */
+  function trackingPeriods(from, to, period) {
+    if (period === 'week') {
+      const K = Math.floor((to - from + 1) / 7);
+      const out = [];
+      for (let k = K - 1; k >= 0; k--) { const hi = to - 7 * k; out.push({ start: hi - 6, end: hi, label: dayRange(hi - 6, hi) }); }
+      return out;
+    }
+    return buildBuckets(from, to, 'month').filter((b) => !b.partial).map((b) => ({ start: b.start, end: b.end, label: b.short }));
+  }
+  /** Index of the period containing `day`, -1 before the first, P after the last. */
+  function periodIndex(periods, day) {
+    if (!periods.length || day < periods[0].start) return -1;
+    let lo = 0, hi = periods.length - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (periods[mid].start <= day) lo = mid; else hi = mid - 1; }
+    return day <= periods[lo].end ? lo : periods.length;
+  }
+
+  // ---------------------------------------------------------------------------
   // Small numeric helpers
   // ---------------------------------------------------------------------------
   const sum = (arr) => arr.reduce((a, b) => a + b, 0);
@@ -196,6 +239,7 @@
     const to = opt.to != null ? opt.to : dataMax;
     const spanDays = to - from + 1;
     const unit = opt.unit && opt.unit !== 'auto' ? opt.unit : autoUnit(spanDays);
+    const tf = timeframeOf(spanDays);
     const threshold = opt.threshold != null ? opt.threshold : 0.25;
     const successOnly = opt.status === 'success';
 
@@ -237,9 +281,6 @@
 
     // Retry chains (within the active range) ---------------------------------
     const retry = retryChains(scope);
-    const recByBucket = zeros(), failByBucket = zeros();
-    for (const c of retry.chains) for (const f of c.failures) recByBucket[idxOf(f.day)]++;
-    for (const r of failed) if (r.cents > 0) failByBucket[idxOf(r.day)]++;
     // Context only: unrecovered failures where the customer had some other
     // successful charge (any amount / card) within 7 days afterwards.
     const salesByCust = new Map();
@@ -265,22 +306,50 @@
       failedCount: failed.length, failedCents: sum(failed.map((r) => r.cents)),
     };
 
-    // KPI deltas: last complete bucket vs the one before ------------------------
-    const perBucket = {
-      gross: s.gross, net,
-      count: s.count,
-      avg: s.gross.map((g, i) => (s.count[i] ? g / s.count[i] : null)),
-      activeCustomers: s.customers.map((x) => x.size),
-      successRate: s.attempts.map((a, i) => (a ? s.success[i] / a : null)),
-      recoveryRate: failByBucket.map((f, i) => (f ? recByBucket[i] / f : null)),
-      voidCents: s.voidCents,
+    // KPI deltas: two equal windows chosen by the timeframe ------------------------
+    //   short/medium: the last 7 (or 28) days vs the 7 (or 28) before;
+    //   about a year: last complete month vs the month before;
+    //   more than a year: last complete month vs the same month a year earlier.
+    const recoveredSet = new Set(retry.chains.flatMap((c) => c.failures));
+    const windowStats = (lo, hi) => {
+      const inW = (r) => r.day >= lo && r.day <= hi;
+      const sl = sales.filter(inW), at = attempts.filter(inW), fl = failed.filter((r) => r.cents > 0 && inW(r));
+      const g = sum(sl.map((r) => r.cents));
+      return {
+        gross: g, net: g - sum(refunds.filter(inW).map((r) => -r.cents)), count: sl.length, avg: sl.length ? g / sl.length : null,
+        activeCustomers: new Set(sl.filter((r) => !r.oneTime).map((r) => r.customer)).size,
+        successRate: at.length ? at.filter((r) => r.status === 'Batched').length / at.length : null,
+        recoveryRate: fl.length ? fl.filter((r) => recoveredSet.has(r)).length / fl.length : null,
+        voidCents: sum(voided.filter(inW).map((r) => r.cents)),
+      };
     };
+    let cmp = null;
+    if (tf.compare === 'trailing') {
+      const W = tf.compareDays.find((d) => 2 * d <= spanDays);
+      if (W) {
+        const n = W === 7 ? '7 days' : (W / 7) + ' weeks';
+        cmp = { kind: 'trailing', a: [to - W + 1, to], b: [to - 2 * W + 1, to - W], label: 'Last ' + n + ' vs previous ' + n,
+          title: dayRange(to - W + 1, to) + ' compared with ' + dayRange(to - 2 * W + 1, to - W) };
+      }
+    } else {
+      const months = buildBuckets(from, to, 'month').filter((b) => !b.partial);
+      const last = months[months.length - 1];
+      const yearAgo = last && months.find((b) => b.start === dayOf(ymd(last.start).y - 1, ymd(last.start).m, 1));
+      const prev = months[months.length - 2];
+      const other = tf.compare === 'yoy' && yearAgo ? yearAgo : prev;
+      if (last && other) {
+        cmp = { kind: other === yearAgo ? 'yoy' : 'month', a: [last.start, last.end], b: [other.start, other.end],
+          label: last.short + ' vs ' + other.short,
+          title: other === yearAgo ? last.label + ' compared with the same month a year earlier (' + other.label + '), so seasonal swings cancel out'
+            : last.label + ' (the last complete month) compared with ' + other.label };
+      }
+    }
     let deltas = null;
-    if (complete.length >= 2) {
-      const a = complete[complete.length - 1], b = complete[complete.length - 2];
-      deltas = { last: a, prev: b, lastLabel: buckets[a].short, prevLabel: buckets[b].short, values: {} };
-      for (const k of Object.keys(perBucket)) {
-        const cur = perBucket[k][a], prev = perBucket[k][b];
+    if (cmp) {
+      const A = windowStats(cmp.a[0], cmp.a[1]), Bw = windowStats(cmp.b[0], cmp.b[1]);
+      deltas = Object.assign({}, cmp, { values: {} });
+      for (const k of Object.keys(A)) {
+        const cur = A[k], prev = Bw[k];
         const isRate = k === 'successRate' || k === 'recoveryRate';
         deltas.values[k] = {
           cur, prev,
@@ -302,9 +371,14 @@
       if (hi === null || s.gross[i] > s.gross[hi]) hi = i;
       if (lo === null || s.gross[i] < s.gross[lo]) lo = i;
     }
+    // % change against a comparable earlier period: the same weekday a week
+    // before for daily bars (weekends would otherwise swing ±100%), the same
+    // month/quarter a year before once there is more than a year of data.
+    const lag = unit === 'day' ? 7 : tf.yoy && unit === 'month' ? 12 : tf.yoy && unit === 'quarter' ? 4 : 1;
     const pop = buckets.map((b, i) => {
-      if (i === 0 || b.partial || buckets[i - 1].partial || s.gross[i - 1] === 0) return null;
-      return (s.gross[i] - s.gross[i - 1]) / s.gross[i - 1];
+      const j = i - lag;
+      if (j < 0 || b.partial || buckets[j].partial || s.gross[j] === 0) return null;
+      return (s.gross[i] - s.gross[j]) / s.gross[j];
     });
 
     // Per-customer aggregates ------------------------------------------------------
@@ -313,7 +387,7 @@
       let c = cust.get(r.customer);
       if (!c) cust.set(r.customer, (c = {
         name: r.customer, oneTime: r.oneTime, gross: 0, count: 0, firstDay: Infinity, lastDay: -Infinity,
-        days: [], series: zeros(), attempts: 0, failed: 0, voidCount: 0, voidCents: 0, voidNotes: [],
+        days: [], attempts: 0, failed: 0, voidCount: 0, voidCents: 0, voidNotes: [],
       }));
       return c;
     };
@@ -323,7 +397,6 @@
       if (r.day < c.firstDay) c.firstDay = r.day;
       if (r.day > c.lastDay) c.lastDay = r.day;
       if (c.days[c.days.length - 1] !== r.day) c.days.push(r.day);
-      c.series[idxOf(r.day)] += r.cents;
     }
     for (const r of attempts) { const c = getC(r); c.attempts++; if (r.status === 'Failed') c.failed++; }
     for (const r of voided) { const c = getC(r); c.voidCount++; c.voidCents += r.cents; if (r.voidNote && !c.voidNotes.includes(r.voidNote)) c.voidNotes.push(r.voidNote); }
@@ -344,9 +417,15 @@
     const n80 = pareto.findIndex((p) => p.cumShare >= 0.8) + 1 || null;
     const concentration = { top5: topShare(5), top10: topShare(10), top20: topShare(20), n80, customers: paretoList.length, risk: topShare(5) > 0.25 };
 
-    // Average revenue per *active* bucket (buckets with ≥1 successful charge).
+    // Average revenue per *active* week/month (calendar periods with ≥1
+    // successful charge); weeks for exports of up to ~6 months, else months.
+    const activeOf = new Map();
+    for (const r of sales) {
+      if (!activeOf.has(r.customer)) activeOf.set(r.customer, new Set());
+      activeOf.get(r.customer).add(bucketStart(r.day, tf.period));
+    }
     const perActive = buyers.map((c) => {
-      const active = c.series.filter((v) => v > 0).length;
+      const active = activeOf.get(c.name).size;
       return { name: c.name, oneTime: c.oneTime, avg: active ? c.gross / active : 0, active };
     }).sort((a, b) => b.avg - a.avg || (a.name < b.name ? -1 : 1)).slice(0, 20);
 
@@ -359,27 +438,53 @@
     }).sort((a, b) => a.avgGap - b.avgGap || (a.name < b.name ? -1 : 1));
     const drifting = cadence.filter((c) => c.since >= 7 && c.ratio >= 2).sort((a, b) => b.gross - a.gross);
 
-    // Momentum: complete buckets only, named customers only -------------------------
-    const momentum = { slopes: [], attention: [], quiet: [], completeCount: complete.length, unit };
-    if (complete.length >= 4) {
-      const c0 = complete[0], c1 = complete[complete.length - 1];
+    // Momentum: named customers, tracked by week or month per the timeframe ----------
+    const periods = trackingPeriods(from, to, tf.period);
+    const P = periods.length;
+    const momentum = { slopes: [], attention: [], quiet: [], periods: P, periodNoun: tf.period, timeframe: tf.key, needTrend: tf.trendMin };
+    const pseries = new Map(named.map((c) => [c.name, new Array(P).fill(0)]));
+    for (const r of sales) {
+      if (r.oneTime) continue;
+      const i = periodIndex(periods, r.day);
+      if (i >= 0 && i < P) pseries.get(r.customer)[i] += r.cents;
+    }
+    const gapOf = new Map(cadence.map((c) => [c.name, c.avgGap]));
+    // Trend: linear slope per period (the last 12 months for multi-year exports).
+    const t0 = tf.trendMax ? Math.max(0, P - tf.trendMax) : 0;
+    momentum.trendFrom = P ? periods[t0].label : null;
+    momentum.trendTo = P ? periods[P - 1].label : null;
+    if (P - t0 >= tf.trendMin) {
       for (const c of named) {
-        const firstIdx = idxOf(c.firstDay);
-        const startIdx = Math.max(c0, firstIdx);
-        if (startIdx > c1) continue;
-        const ys = c.series.slice(startIdx, c1 + 1);
+        const first = periodIndex(periods, c.firstDay);
+        if (first >= P) continue;
+        const ys = pseries.get(c.name).slice(Math.max(t0, first, 0));
         const activeN = ys.filter((v) => v > 0).length;
-        if (ys.length < 4 || activeN < 3) continue;
+        if (ys.length < tf.trendMin || activeN < tf.trendActive) continue;
         momentum.slopes.push({ name: c.name, slope: slope(ys) / 100, buckets: ys.length, active: activeN, gross: c.gross });
       }
       momentum.slopes.sort((a, b) => b.slope - a.slope || (a.name < b.name ? -1 : 1));
     }
-    if (complete.length >= 6) {
-      const recent = complete.slice(-3), base = complete.slice(-6, -3);
-      momentum.window = { recent: recent.map((i) => buckets[i].short), base: base.map((i) => buckets[i].short) };
+    // Needs attention: recent periods vs a baseline (same months a year earlier
+    // when there is enough history, so seasonality doesn't raise false alarms).
+    let rIdx = null, bIdx = null, wKind = 'sequential';
+    if (tf.yoy && P >= tf.recent + 12) {
+      rIdx = [...Array(tf.recent).keys()].map((k) => P - tf.recent + k);
+      bIdx = rIdx.map((i) => i - 12);
+      wKind = 'yoy';
+    } else if (P >= 2) {
+      const R = P >= tf.recent + tf.base ? tf.recent : Math.max(1, Math.floor(P / 2));
+      const Bn = Math.min(tf.base, P - R);
+      rIdx = [...Array(R).keys()].map((k) => P - R + k);
+      bIdx = [...Array(Bn).keys()].map((k) => P - R - Bn + k);
+    }
+    if (rIdx) {
+      const span = (idx) => (tf.period === 'week' ? dayRange(periods[idx[0]].start, periods[idx[idx.length - 1]].end)
+        : idx.length === 1 ? periods[idx[0]].label : periods[idx[0]].label + ' – ' + periods[idx[idx.length - 1]].label);
+      momentum.window = { kind: wKind, recent: span(rIdx), base: span(bIdx), recentN: rIdx.length, baseN: bIdx.length };
       for (const c of named) {
-        const baseAvg = mean(base.map((i) => c.series[i]));
-        const recentAvg = mean(recent.map((i) => c.series[i]));
+        const ys = pseries.get(c.name);
+        const baseAvg = mean(bIdx.map((i) => ys[i]));
+        const recentAvg = mean(rIdx.map((i) => ys[i]));
         if (baseAvg <= 0) continue;
         const change = (recentAvg - baseAvg) / baseAvg;
         if (change <= -threshold) {
@@ -388,11 +493,13 @@
       }
       momentum.attention.sort((a, b) => b.gap - a.gap || (a.name < b.name ? -1 : 1));
     }
-    if (complete.length >= 3) {
-      const quietStart = buckets[complete[complete.length - 2]].start;
+    // Gone quiet: nothing in the last 2 periods (or since), after buying before,
+    // and longer than twice the customer's own usual gap when that is known.
+    if (P >= 3) {
+      const quietStart = periods[P - 2].start;
       momentum.quietSince = quietStart;
-      momentum.quietLabels = complete.slice(-2).map((i) => buckets[i].short);
-      momentum.quiet = named.filter((c) => c.lastDay < quietStart && c.count >= 2)
+      momentum.quietLabels = [periods[P - 2].label, periods[P - 1].label];
+      momentum.quiet = named.filter((c) => c.lastDay < quietStart && c.count >= 2 && !(gapOf.has(c.name) && to - c.lastDay <= 2 * gapOf.get(c.name)))
         .map((c) => ({ name: c.name, gross: c.gross / 100, lastDay: c.lastDay, since: to - c.lastDay, count: c.count }))
         .sort((a, b) => b.gross - a.gross || (a.name < b.name ? -1 : 1));
     }
@@ -417,13 +524,19 @@
     }
 
     // Acquisition -------------------------------------------------------------------
-    const firstBucket = new Map(named.map((c) => [c.name, idxOf(c.firstDay)]));
-    const acq = { newC: zeros(), returning: zeros(), cumulative: zeros() };
+    // Customers first seen in the opening weeks were almost certainly customers
+    // already (the export just starts mid-relationship), so "new" only counts
+    // first purchases after that settling-in window.
+    // (warmupDays null = too little history to tell new from existing at all.)
+    const newKnown = tf.warmupDays != null && spanDays > tf.warmupDays;
+    const warmEnd = newKnown ? from + tf.warmupDays - 1 : to;
+    const firstBucket = new Map(named.map((c) => [c.name, c.firstDay > warmEnd ? idxOf(c.firstDay) : -1]));
+    const acq = { newC: zeros(), returning: zeros(), cumulative: zeros(), newKnown, warmupDays: tf.warmupDays, existingAtStart: named.filter((c) => c.firstDay <= warmEnd).length };
     s.customers.forEach((set, i) => {
       for (const name of set) { if (firstBucket.get(name) === i) acq.newC[i]++; else acq.returning[i]++; }
     });
-    let cum = 0;
-    acq.newC.forEach((n, i) => { cum += n; acq.cumulative[i] = cum; });
+    const seen = new Set();
+    s.customers.forEach((set, i) => { for (const name of set) seen.add(name); acq.cumulative[i] = seen.size; });
 
     // Risk & operations -----------------------------------------------------------------
     const MIN_TX = 10;
@@ -450,6 +563,34 @@
       .map((c) => ({ name: c.name, oneTime: c.oneTime, count: c.voidCount, cents: c.voidCents, notes: c.voidNotes }))
       .sort((a, b) => b.cents - a.cents || b.count - a.count);
 
+    // Year over year: complete calendar months laid out by year -----------------------
+    let yoy = null;
+    if (tf.yoy) {
+      const months = buildBuckets(from, to, 'month');
+      const byMonth = new Map(months.map((b) => [b.start, 0]));
+      for (const r of sales) byMonth.set(bucketStart(r.day, 'month'), byMonth.get(bucketStart(r.day, 'month')) + r.cents);
+      const years = [];
+      for (const b of months) {
+        const t = ymd(b.start);
+        let y = years.find((x) => x.year === t.y);
+        if (!y) years.push((y = { year: t.y, months: new Array(12).fill(null) }));
+        if (!b.partial) y.months[t.m] = byMonth.get(b.start);
+      }
+      years.forEach((y) => { y.complete = y.months.every((v) => v !== null); y.total = y.complete ? sum(y.months) : null; });
+      years.forEach((y, i) => { const p = years[i - 1]; y.change = y.complete && p && p.complete && p.total ? (y.total - p.total) / p.total : null; });
+      // Year to date: the latest year's complete months vs the same months a year earlier.
+      const cur = years[years.length - 1], prv = years[years.length - 2];
+      let ytd = null;
+      if (cur && prv) {
+        const ms = cur.months.map((v, m) => m).filter((m) => cur.months[m] !== null && prv.months[m] !== null);
+        if (ms.length) {
+          const a = sum(ms.map((m) => cur.months[m])), b = sum(ms.map((m) => prv.months[m]));
+          ytd = { year: cur.year, prevYear: prv.year, months: ms.map((m) => MONTHS[m]), cur: a, prev: b, change: b ? (a - b) / b : null };
+        }
+      }
+      yoy = { years, ytd };
+    }
+
     // Data-quality items that depend on the analysis -------------------------------------
     const dupMap = new Map();
     for (const r of sales.concat(refunds)) {
@@ -462,7 +603,8 @@
 
     return {
       from, to, spanDays, unit, autoUnit: autoUnit(spanDays), dataMin, dataMax, successOnly, threshold,
-      buckets, complete, rollingWindow: w,
+      timeframe: tf, buckets, complete, rollingWindow: w, popLag: lag, yoy, perActiveNoun: tf.period,
+      runRate: { perWeek: (gross / spanDays) * 7, perMonth: (gross / spanDays) * (365.25 / 12) },
       series: { gross: s.gross, net, refunds: s.refunds, count: s.count, rolling, pop, hi, lo },
       totals, deltas, retry: Object.assign({}, retry, { looseRecovered }),
       top15, pareto, concentration, perActive, cadence, drifting, momentum, rfm, acq,
@@ -474,6 +616,7 @@
 
   const api = {
     analyse, retryChains, buildBuckets, bucketStart, nextStart, autoUnit, slope, quartileScores, segmentOf,
+    TIMEFRAMES, timeframeOf, trackingPeriods, periodIndex, dayRange,
     ymd, dayOf, isoDate, longDate, UNITS, UNIT_LABEL, UNIT_NOUN, ROLLING, SEGMENTS, MONTHS, ONE_TIME, DAY_MS,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

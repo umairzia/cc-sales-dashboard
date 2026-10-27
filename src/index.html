@@ -135,10 +135,18 @@
         </article>
         <article class="card span-2" data-chart="pop">
           <header class="card-head">
-            <div><h3 id="t-pop">Change vs previous period</h3><p class="card-sub">Percent change in revenue from one period to the next</p></div>
+            <div><h3 id="t-pop">Change vs previous period</h3><p class="card-sub" id="s-pop">Percent change in revenue from one period to the next</p></div>
           </header>
           <div class="chart-box short"><canvas id="c-pop" role="img"></canvas></div>
           <p class="caption" id="cap-pop"></p>
+        </article>
+        <article class="card span-2" data-chart="yoy" id="card-yoy" hidden>
+          <header class="card-head"><div><h3>Year over year</h3><p class="card-sub">Revenue per month, one line per calendar year · shown when the export covers more than a year</p></div></header>
+          <div class="yoy-row">
+            <div class="chart-box"><canvas id="c-yoy" role="img"></canvas></div>
+            <div class="table-wrap" id="tbl-yoy"></div>
+          </div>
+          <p class="caption" id="cap-yoy"></p>
         </article>
       </div>
     </section>

@@ -226,6 +226,7 @@ button, input, select { font: inherit; color: inherit; }
 .chart-box canvas { display: block; }
 .chart-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--muted); text-align: center; padding: 16px; border: 1px dashed var(--border-strong); border-radius: 8px; font-size: 13px; }
 
+.yoy-row { display: grid; grid-template-columns: minmax(0, 3fr) minmax(220px, 1fr); gap: 20px; align-items: start; }
 .donut-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: center; }
 .chart-box.donut { height: 230px; }
 .donut-legend { display: grid; gap: 10px; }
@@ -378,6 +379,7 @@ table.data tbody tr:hover { background: var(--surface-2); }
   .chart-box canvas { display: none !important; }
   .print-img { display: block; width: 100%; height: auto; }
   .donut-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .yoy-row { grid-template-columns: minmax(0, 1fr); }
   .chart-box.donut .print-img { max-width: 240px; margin: 0 auto; }
   .dq:not([open]) { display: none; }
   /* Long lists are capped on paper; the note says so. */
@@ -390,3 +392,4 @@ body.printing #app { min-width: 0; max-width: 700px; padding: 0 24px; }
 @media screen { .print-img { display: none; } }
 body.printing .grid { grid-template-columns: minmax(0, 1fr); }
 body.printing .span-2 { grid-column: auto; }
+body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }

@@ -80,6 +80,12 @@ if (expectError) {
     if (/NaN|undefined|\[object/.test(bodyText)) fail('page text contains NaN/undefined/[object');
     const expUnit = opt('--expect-unit');
     if (expUnit && result.summary.unit !== expUnit) fail('expected auto bucket ' + expUnit + ', got ' + result.summary.unit);
+    const expTf = opt('--expect-timeframe');
+    if (expTf && result.summary.timeframe !== expTf) fail('expected timeframe ' + expTf + ', got ' + result.summary.timeframe);
+    const yoyShown = await page.isVisible('#card-yoy');
+    if (yoyShown !== (result.summary.timeframe === 'multi')) fail('year-over-year card ' + (yoyShown ? 'shown' : 'hidden') + ' for a ' + result.summary.timeframe + ' export');
+    const tfNotice = await page.textContent('#notices');
+    if (!/This export covers \d+ days/.test(tfNotice)) fail('timeframe explanation missing from the notices');
 
     if (flag('--screenshot')) await page.screenshot({ path: resolve(out, name + '.png'), fullPage: true });
     if (flag('--screenshot') && flag('--hero-shot')) await page.screenshot({ path: resolve(out, name + '-top.png'), clip: { x: 0, y: 0, width: vw, height: +opt('--hero-height', 1250) } });

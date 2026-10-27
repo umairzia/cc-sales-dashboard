@@ -245,3 +245,47 @@ test('the synthetic sample suggests exactly its two multi-card customers', () =>
   for (const s of G.suggestGroups(rows)) for (const m of s.members) got[m] = s.name;
   assert.deepEqual(got, want);
 });
+
+test('timeframe profiles: what each comparison means for 3 weeks, 3 months, a year, 3 years', () => {
+  assert.deepEqual([21, 45, 46, 90, 183, 184, 365, 395, 396, 1095].map((d) => M.timeframeOf(d).key),
+    ['short', 'short', 'medium', 'medium', 'medium', 'long', 'long', 'long', 'multi', 'multi']);
+  const d = (s) => P.parseDate(s).day;
+  // 7-day tracking blocks are counted back from the last day, so each is complete.
+  const weeks = M.trackingPeriods(d('06/10/2025'), d('01/11/2025'), 'week');
+  assert.deepEqual(weeks.map((w) => [M.isoDate(w.start), M.isoDate(w.end)]),
+    [['2025-10-12', '2025-10-18'], ['2025-10-19', '2025-10-25'], ['2025-10-26', '2025-11-01']]);
+  assert.equal(M.trackingPeriods(d('06/01/2025'), d('28/11/2025'), 'month').length, 9); // Feb–Oct complete
+
+  // Build a regular weekly customer and check each profile's comparison.
+  const rows = (from, to) => {
+    const out = [];
+    for (let day = d(from); day <= d(to); day += 7) out.push({ day, second: 0, line: out.length, customer: 'A', oneTime: false, cents: 10000, card: 'VISA', status: 'Batched' });
+    out.push({ day: d(to), second: 1, line: out.length, customer: 'B', oneTime: false, cents: 5000, card: 'VISA', status: 'Batched' });
+    return out;
+  };
+  let a = M.analyse(rows('06/10/2025', '01/11/2025'), {});
+  assert.equal(a.timeframe.key, 'short');
+  assert.equal(a.deltas.label, 'Last 7 days vs previous 7 days');
+  assert.equal(a.popLag, 7);                // daily bars: same weekday a week earlier
+  assert.equal(a.acq.newKnown, false);      // too short to tell new from existing
+  a = M.analyse(rows('02/06/2025', '30/08/2025'), {});
+  assert.equal(a.timeframe.key, 'medium');
+  assert.equal(a.deltas.label, 'Last 4 weeks vs previous 4 weeks');
+  assert.equal(a.momentum.periodNoun, 'week');
+  assert.equal(a.acq.newC.reduce((x, y) => x + y, 0), 1);  // B first seen after the 35-day settling-in
+  a = M.analyse(rows('01/01/2025', '31/12/2025'), {});
+  assert.equal(a.timeframe.key, 'long');
+  assert.equal(a.deltas.kind, 'month');
+  assert.equal(a.deltas.label, "Dec '25 vs Nov '25");
+  assert.equal(a.yoy, null);
+  a = M.analyse(rows('01/01/2023', '31/12/2025'), {});
+  assert.equal(a.timeframe.key, 'multi');
+  assert.equal(a.deltas.kind, 'yoy');
+  assert.equal(a.deltas.label, "Dec '25 vs Dec '24");
+  assert.equal(a.popLag, 12);                // monthly bars: same month a year earlier
+  assert.equal(a.momentum.window.kind, 'yoy');
+  assert.equal(a.momentum.trendFrom, "Jan '25"); // trend over the last 12 months
+  assert.deepEqual(a.yoy.years.map((y) => y.year), [2023, 2024, 2025]);
+  // A regular weekly customer is never "gone quiet" or flagged, at any timeframe.
+  assert.equal(a.momentum.quiet.length, 0);
+});
