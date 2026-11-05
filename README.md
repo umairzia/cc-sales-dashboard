@@ -351,6 +351,19 @@ here so it isn't hidden in the code.
 - **Printing** snapshots each chart as an image, so charts scale to any paper size,
   and caps long tables at 15 rows with a note.
 
+## Methodology notebook
+
+[`notebooks/cc_sales_analysis.ipynb`](notebooks/cc_sales_analysis.ipynb) reproduces **every number, table and chart
+in the dashboard** with pandas and matplotlib, step by step: loading, cleaning, customer groups, timeframes, then
+each section of the dashboard in order. Every calculation is explained, and the code comments give the business
+reason for it. It ends with a table of what changed from the original 2025 analysis notebook, and why.
+
+The committed copy runs on the synthetic sample. To run it on a real export, put the CSV (and optionally a
+`customer-groups.csv` saved from the dashboard) next to the notebook, set `CSV_PATH` / `GROUPS_PATH` in the first
+cell, and run all cells. Its figures match the dashboard's on 28 cross-checks (totals to the cent, revenue per
+period, every customer's trend, segments, needs attention, gone quiet, new customers, KPI windows and suggested
+groups) for every timeframe: 3 weeks, 6 months, a year and 3 years. Needs `pandas`, `numpy` and `matplotlib`.
+
 ## Rebuilding from source
 
 The distributable is one file, but the source is modular:
@@ -377,6 +390,7 @@ cc-sales-dashboard/
 │   ├── e2e.mjs                 ← headless-browser test of the built file
 │   ├── verify_metrics.py       ← independent pandas re-computation
 │   └── fixtures/               ← 90-day, 5-year, one-customer, malformed… files
+├── notebooks/cc_sales_analysis.ipynb  ← step-by-step pandas methodology for every chart
 └── docs/csv-format.md          ← input contract + cleaning rules
 ```
 
