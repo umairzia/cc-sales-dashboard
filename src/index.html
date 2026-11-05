@@ -67,7 +67,7 @@
         <p>The file is read by this page, inside your browser. Nothing is uploaded, stored or sent anywhere. The page makes no network requests at all, so it works with Wi-Fi switched off.</p>
         <p>Your CSV is never modified.</p>
         <h3>What you’ll see</h3>
-        <p>Revenue trend and slowdowns, customers growing or going quiet, concentration risk, RFM segments, new vs returning customers, failed charges and retries, and a data-quality check of everything above.</p>
+        <p>Revenue trend and slowdowns, customers growing, slipping or stopping card payments, concentration risk, RFM segments, customers starting to pay by card, failed charges and retries, and a data-quality check of everything above.</p>
       </div>
     </div>
   </section>
@@ -178,10 +178,10 @@
           </article>
           <article class="card">
             <header class="card-head">
-              <div><h3>Gone quiet</h3><p class="card-sub" id="s-quiet"></p></div>
+              <div><h3>Stopped paying by card</h3><p class="card-sub" id="s-stopped"></p></div>
             </header>
-            <div class="table-wrap scroll mid" id="tbl-quiet"></div>
-            <p class="caption" id="cap-quiet"></p>
+            <div class="table-wrap scroll mid" id="tbl-stopped"></div>
+            <p class="caption" id="cap-stopped"></p>
           </article>
         </div>
       </div>
@@ -216,8 +216,9 @@
           <p class="caption" id="cap-cadence"></p>
         </article>
         <article class="card span-2">
-          <header class="card-head"><div><h3>Overdue against their own rhythm</h3><p class="card-sub">Customers whose time since their last charge is at least twice their usual gap (and at least 7 days)</p></div></header>
+          <header class="card-head"><div><h3>Overdue against their own rhythm</h3><p class="card-sub">Customers whose time since their last card payment is at least twice their usual gap (and at least 7 days), but under 60 days</p></div></header>
           <div class="table-wrap scroll mid" id="tbl-drifting"></div>
+          <p class="caption" id="cap-drifting"></p>
         </article>
       </div>
     </section>
@@ -251,7 +252,7 @@
       <h2 id="h-acq" class="section-title">Acquisition</h2>
       <div class="grid">
         <article class="card span-2" data-chart="acq">
-          <header class="card-head"><div><h3>New vs returning customers</h3><p class="card-sub">Customers with a successful charge in each period, and the running total of unique customers</p></div></header>
+          <header class="card-head"><div><h3>Customers starting to pay by card</h3><p class="card-sub">Customers with a successful card payment in each period, split by whether it is their first in this export, and the running total of unique card-paying customers</p></div></header>
           <div class="chart-box"><canvas id="c-acq" role="img"></canvas></div>
           <p class="caption" id="cap-acq"></p>
         </article>

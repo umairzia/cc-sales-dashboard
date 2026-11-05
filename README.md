@@ -170,8 +170,8 @@ the top says, in one sentence, how the current export is being read.
 | % change chart compares | each day with the same weekday a week before | each week with the week before | each month with the month before | each month with **the same month a year earlier** |
 | Customers tracked by | 7-day blocks counted back from the last day | 7-day blocks | complete months | complete months; trends over the last 12 |
 | Needs attention | last 2 weeks vs 2 before | last 4 weeks vs 4 before | last 3 months vs 3 before | last 3 months vs **the same 3 months a year earlier** |
-| Gone quiet | nothing in the last 2 weeks | nothing in the last 2 weeks | nothing in the last 2 months | nothing in the last 2 months |
-| New customers | not shown: too little history to tell | after a 35-day settling-in window | after a 45-day settling-in window | after a 45-day settling-in window |
+| Stopped paying by card | not shown: too short to tell | no card payment in the last 60 days | no card payment in the last 60 days | no card payment in the last 60 days |
+| Started paying by card | not shown: too little history to tell | first card payment after a 35-day settling-in window | after a 45-day settling-in window | after a 45-day settling-in window |
 | Extra | | | | **Year over year** chart and annual totals |
 
 Why these choices:
@@ -181,11 +181,17 @@ Why these choices:
   off days.
 - **Year-on-year comparisons cancel out seasonality.** A summer peak or a quiet
   January doesn't look like growth or a slowdown.
-- **Gone quiet also needs the silence to be longer than twice the customer's own
-  usual gap,** so a monthly customer isn't flagged after 2 weeks.
-- **New customers need a settling-in window.** Every export starts part-way through
-  existing relationships, so customers first seen in its opening weeks count as
-  existing customers.
+- **60 days without a card payment means a customer has stopped paying by card.**
+  This is the business's own rule: a gap that long almost always means the account
+  moved to EFT or another method (occasionally that it stopped trading), so it is
+  recorded as "stopped paying by card as of" the last card payment, not as lost
+  sales. The rule is fixed, not scaled to the export, because it describes how
+  customers pay rather than how much history is loaded.
+- **Starting to pay by card needs a settling-in window.** Every export starts
+  part-way through existing relationships, so customers first seen in its opening
+  weeks count as already paying by card. A later first card payment is labelled
+  "started paying by card", not "new customer", because it can also be an existing
+  account moving from EFT or returning after a break.
 
 **KPI tiles.** Gross and net revenue, transactions, average transaction, active
 customers, success rate, retry recovery rate and voided amount. Each tile shows
@@ -202,15 +208,20 @@ year-to-date totals.
 **Momentum and slowdown.** A linear trend ($ per week or month) for every customer
 with enough history, drawn as a diverging bar chart (deeper red = steeper
 decline). Next to it: a **Needs attention** table (recent spending at least *X*%
-below a baseline, with an adjustable threshold) and a **Gone quiet** list sorted by
-lifetime revenue.
+below a baseline, with an adjustable threshold) and a **Stopped paying by card**
+list: customers with no card payment in the last 60 days, with the date of their
+last card payment, presumed to pay another way now. Customers who stopped paying
+by card are left out of the trend chart and Needs attention. Customers who came
+back to card after a 60+ day break are named under the list, and the periods they
+spent off card are skipped in their trend rather than counted as $0.
 
-![Customer trend, needs attention and gone quiet](docs/screenshots/momentum.png)
+![Customer trend, needs attention and stopped paying by card](docs/screenshots/momentum.png)
 
 **Customers.** Top 15 by revenue, a Pareto concentration curve with a plain-English
 risk call-out when the top 5 hold more than 25%, average revenue per *active* month,
-payment cadence (usual gap vs days since the last charge), and a list of customers
-who are overdue against their own rhythm.
+payment cadence (usual gap vs days since the last card payment, for customers still
+paying by card), and a list of customers who are overdue against their own rhythm
+but under 60 days: the list worth a call.
 
 ![Revenue concentration](docs/screenshots/concentration.png)
 
@@ -221,8 +232,10 @@ customers.
 
 ![RFM segments](docs/screenshots/segments.png)
 
-**Acquisition.** New vs existing customers per period, with a cumulative line of
-unique customers, which shows whether the base is growing or just churning sideways.
+**Acquisition.** Customers starting to pay by card vs those already paying by card,
+per period, with a cumulative line of unique card-paying customers. A first card
+payment isn't necessarily a new customer (it can be an existing account moving
+from EFT), and the caption says so.
 
 **Risk and operations.** Failure rate by customer (10+ attempts only, stated on
 screen), card type mix, failure rate by card network, decline reasons, retry chains
@@ -286,8 +299,8 @@ here so it isn't hidden in the code.
 
 **Periods**
 - **Timeframes.** The brief only adapted the chart grouping. Comparisons, customer
-  tracking and "new customer" now adapt to the export's length as well (see *Any
-  length of export*). The thresholds come from real ordering gaps.
+  tracking and "started paying by card" now adapt to the export's length as well
+  (see *Any length of export*). The thresholds come from real ordering gaps.
 - **Partial periods.** A period is partial when the selected range doesn't cover
   all of it, for example an export that starts on 6 January. Partial periods are
   hatched and starred in charts and skipped in the % change chart and rolling
@@ -314,8 +327,8 @@ here so it isn't hidden in the code.
 - **The One-Time Manual Charge aggregate** is included in revenue totals, the
   top-15 list, the per-active-month chart and failure/void lists, always tagged †.
   It is placed last on the Pareto curve and never counts towards top-5
-  concentration. It is excluded from trends, needs attention, gone quiet,
-  cadence, RFM and acquisition.
+  concentration. It is excluded from trends, needs attention, stopped paying by
+  card, cadence, RFM and acquisition.
 - **Retry chains are sequential.** The brief defines a chain as a group holding
   ≥1 Failed and ≥1 Batched. Here, only failures *followed by* a later success
   count as recovered, because a success that came before a failure isn't a
@@ -330,20 +343,34 @@ here so it isn't hidden in the code.
 - **Momentum** uses each customer's periods from their first one, so a customer
   who joined in month 9 isn't fitted with eight leading zeros. It needs at least 4
   periods with 3 active (3 with 2 for a few weeks of data). *Needs attention* is
-  sorted by dollar shortfall (an extra column). *Gone quiet* requires at least 2
-  successful charges before the silence, and a silence longer than twice the
-  customer's usual gap, so one-off and monthly buyers aren't listed by mistake.
+  sorted by dollar shortfall (an extra column).
+- **Stopped paying by card (business rule, replaces "gone quiet").** No successful
+  card payment for 60+ days up to the end of the range. The customer is listed
+  with the date of their last card payment and the card revenue up to then, and is
+  left out of trends, Needs attention and cadence, because the slide to $0 is a
+  change of payment method, not a decline. One-off customers are included: the
+  list is a record of when card payments ended, not a churn alarm.
+- **Breaks from card.** 60+ days between two card payments is a spell off card.
+  Tracking periods wholly inside it are skipped (not counted as $0) in that
+  customer's trend and Needs attention averages, and the break is left out of
+  their usual gap. Periods that only partly overlap a break are kept, so a
+  customer's first and last months around a break can still read low.
 - **Average revenue per active week or month** (week for exports up to ~6 months)
   divides by the weeks or months with at least one successful charge.
-- **Payment cadence** uses distinct charge days and needs 3 or more. A customer is
-  overdue when the days since their last charge are at least twice their usual
-  gap and at least 7 days. The axis is capped at 3× the largest usual gap; markers
+- **Payment cadence** covers customers still paying by card, uses distinct charge
+  days and needs at least 2 gaps under 60 days. A customer is overdue when the
+  days since their last charge are at least twice their usual gap and at least 7
+  days (and, since stopped customers are excluded, under 60). The axis is capped at 3× the largest usual gap; markers
   off the scale show as ▶.
 - **RFM** covers named customers only, breaks ties alphabetically, and needs at
   least 4 customers.
-- **Acquisition** counts "new" only after a settling-in window (35 or 45 days),
-  because everyone in the first weeks of an export was almost certainly a customer
-  already. Exports of a few weeks don't show "new" at all, and the caption says why.
+- **Acquisition** counts "started paying by card" only after a settling-in window
+  (35 or 45 days), because everyone in the first weeks of an export was almost
+  certainly paying by card already. It is deliberately not called "new
+  customers": the export only shows card payments, so it can't tell a new
+  customer from an existing one moving from EFT or returning after a break. That
+  needs the customer list or earlier exports. Exports of a few weeks don't show
+  the split at all, and the caption says why.
 - **Customer rankings and card mix** use gross revenue.
 - **The status filter.** Revenue is always Batched-only, so *Successful only*
   mostly serves as a clean view for printing: failure, retry and void sections are
@@ -360,9 +387,9 @@ reason for it. It ends with a table of what changed from the original 2025 analy
 
 The committed copy runs on the synthetic sample. To run it on a real export, put the CSV (and optionally a
 `customer-groups.csv` saved from the dashboard) next to the notebook, set `CSV_PATH` / `GROUPS_PATH` in the first
-cell, and run all cells. Its figures match the dashboard's on 28 cross-checks (totals to the cent, revenue per
-period, every customer's trend, segments, needs attention, gone quiet, new customers, KPI windows and suggested
-groups) for every timeframe: 3 weeks, 6 months, a year and 3 years. Needs `pandas`, `numpy` and `matplotlib`.
+cell, and run all cells. Its figures match the dashboard's on 31 cross-checks (totals to the cent, revenue per
+period, every customer's trend, segments, needs attention, stopped paying by card, back on card, overdue
+customers and their usual gaps, started paying by card, KPI windows and suggested groups) for every timeframe: 3 weeks, 6 months, a year and 3 years. Needs `pandas`, `numpy` and `matplotlib`.
 
 ## Rebuilding from source
 
@@ -425,11 +452,13 @@ dependency.
    transaction and attempt counts, success rates, top-5/top-10 concentration,
    retry chains and recovery rate, revenue per bucket, **every customer's trend
    slope**, RFM segment sizes, the timeframe and its KPI comparison windows,
-   year-over-year totals, and the text shown on the tiles. 34/34 checks pass on the
+   year-over-year totals, who stopped paying by card (and when), who came back
+   after a break, every usual payment gap, the overdue and needs-attention lists
+   (with their averages), and the text shown on the tiles. 41/41 checks pass on the
    sample, on every timeframe fixture and on real exports, with and without
    customer groups.
 4. **Timeframes and edge cases.** A 3-week file reads as "a few weeks" (daily
-   charts, 7-day comparisons, no "new" split), a 90-day file as "a few months", the
+   charts, 7-day comparisons, no "started paying by card" split or 60-day list), a 90-day file as "a few months", the
    12-month sample as "about a year", and 3- and 5-year files as "more than a year"
    (year-on-year comparisons and the year-over-year chart; quarterly charts at 5
    years). A

@@ -69,7 +69,8 @@ column(s), along with the columns it did find.
    the terminal once and never stored against an account. It is treated as a
    single pseudo-customer, marked with † and an "aggregate" tag wherever it
    could rank, and left out of per-customer behaviour analysis (trends, needs
-   attention, gone quiet, cadence, RFM, acquisition, active-customer count).
+   attention, stopped paying by card, cadence, RFM, acquisition, active-customer
+   count).
 5. **Negative amounts** (refunds, chargebacks, credits) are never netted into
    gross revenue. They are counted and listed separately; *net revenue* =
    gross − refunds.
@@ -158,7 +159,7 @@ excluded from the % change chart and rolling averages.
 Chart buckets only decide how bars are drawn. Comparisons follow a timeframe
 chosen from the same span:
 
-| Timeframe | Span | KPI comparison | Customer tracking | Needs attention baseline | "New" customers |
+| Timeframe | Span | KPI comparison | Customer tracking | Needs attention baseline | "Started paying by card" |
 |---|---|---|---|---|---|
 | a few weeks | ≤ 45 days | last 7 days vs the 7 before | 7-day blocks counted back from the last day | previous 2 weeks (recent: last 2) | not determined |
 | a few months | 46–183 days | last 28 (or 14, 7) days vs the same before | 7-day blocks | previous 4 weeks (recent: last 4) | first seen after day 35 |
@@ -167,5 +168,19 @@ chosen from the same span:
 
 The % change chart compares each day with the same weekday a week earlier, and
 (more than a year) each month or quarter with the same one a year earlier.
-"Gone quiet" means no successful charge in the last two tracking periods, after
-at least two charges, and a silence longer than twice the customer's usual gap.
+
+## Card payment breaks (60-day rule)
+
+The export only contains card payments. Business rule, the same for every
+timeframe:
+
+| Situation | Meaning | Treatment |
+|---|---|---|
+| No successful card payment in the last **60+ days** of the range (`to − last card payment ≥ 60`) | **Stopped paying by card** as of the last card payment: presumed moved to EFT or another method, occasionally stopped trading | Listed with that date and the card revenue up to it. Left out of trends, Needs attention and payment cadence. Not treated as lost revenue. |
+| **60+ days between two card payments** | A spell **off card**, then back | Tracking periods wholly inside the break are skipped (not $0) in the trend and in both Needs attention averages; the break is left out of the usual gap. The customer is named as "back on card". |
+| Late against their own usual gap (≥ 2× and ≥ 7 days) but **under 60 days** | **Overdue**: still a card payer | Listed under *Overdue against their own rhythm*. |
+
+Exports of 60 days or less can't show anyone as stopped. A customer's first card
+payment after the settling-in window is labelled **started paying by card**, not
+"new customer", because it can also be an existing account moving from EFT or
+returning after a break.

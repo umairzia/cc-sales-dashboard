@@ -556,14 +556,14 @@
   // ---------------------------------------------------------------------------
   function acquisition(a, t) {
     const labels = a.buckets.map((b) => b.short + (b.partial ? '*' : ''));
-    const existingLabel = a.acq.newKnown ? 'Returning customers' : 'Active customers';
+    const existingLabel = a.acq.newKnown ? 'Already paying by card' : 'Paying by card';
     return make('acq', {
       data: {
         labels,
         datasets: [
           { type: 'bar', label: existingLabel, data: a.acq.returning, backgroundColor: t.accent, stack: 'c', order: 2, maxBarThickness: 34, borderSkipped: 'start', borderRadius: a.acq.newKnown ? 0 : { topLeft: 4, topRight: 4 } },
-          a.acq.newKnown ? { type: 'bar', label: 'New customers', data: a.acq.newC, backgroundColor: t.series2, stack: 'c', order: 2, maxBarThickness: 34, borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: 'start' } : null,
-          { type: 'line', label: 'Cumulative unique customers', data: a.acq.cumulative, borderColor: t.text, backgroundColor: t.text, borderWidth: 2, pointRadius: 3, pointBorderWidth: 2, pointBorderColor: t.surface, stack: 'cum', order: 1, tension: 0.2, pointStyle: 'circle' },
+          a.acq.newKnown ? { type: 'bar', label: 'Started paying by card', data: a.acq.newC, backgroundColor: t.series2, stack: 'c', order: 2, maxBarThickness: 34, borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: 'start' } : null,
+          { type: 'line', label: 'Cumulative card-paying customers', data: a.acq.cumulative, borderColor: t.text, backgroundColor: t.text, borderWidth: 2, pointRadius: 3, pointBorderWidth: 2, pointBorderColor: t.surface, stack: 'cum', order: 1, tension: 0.2, pointStyle: 'circle' },
         ].filter(Boolean),
       },
       options: {
@@ -577,7 +577,7 @@
           tooltip: { callbacks: { title: (items) => a.buckets[items[0].dataIndex].label } },
         },
       },
-    }, 'Stacked bars of new and returning customers per period with a cumulative line');
+    }, 'Stacked bars of customers starting to pay by card and customers already paying by card, per period, with a cumulative line');
   }
 
   // ---------------------------------------------------------------------------

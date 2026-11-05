@@ -10,6 +10,12 @@
   const DAY_MS = 86400000;
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const ONE_TIME = 'One-Time Manual Charge';
+  // Business rule: 60+ days without a successful card payment means the
+  // customer has stopped paying by card — almost always a switch to EFT or
+  // another method, occasionally that they stopped trading. It is recorded as
+  // "stopped paying by card as of <last card payment>", never as lost revenue,
+  // and a 60+ day break between two card payments is "off card" for that time.
+  const CARD_STOP_DAYS = 60;
 
   // ---------------------------------------------------------------------------
   // Calendar helpers
@@ -144,13 +150,16 @@
   const mean = (arr) => (arr.length ? sum(arr) / arr.length : 0);
 
   /** Ordinary least squares slope of y against x = 0..n-1. */
-  function slope(ys) {
+  /** Least-squares slope of ys against xs (default 0, 1, 2, …). Periods a
+   *  customer spent off card are dropped by passing only the kept xs. */
+  function slope(ys, xs) {
     const n = ys.length;
     if (n < 2) return 0;
-    const xm = (n - 1) / 2;
+    const x = xs || ys.map((_, i) => i);
+    const xm = mean(x);
     const ym = mean(ys);
     let num = 0, den = 0;
-    for (let i = 0; i < n; i++) { num += (i - xm) * (ys[i] - ym); den += (i - xm) * (i - xm); }
+    for (let i = 0; i < n; i++) { num += (x[i] - xm) * (ys[i] - ym); den += (x[i] - xm) * (x[i] - xm); }
     return den ? num / den : 0;
   }
 
@@ -406,6 +415,30 @@
     const oneTimeCust = buyers.find((c) => c.oneTime) || null;
     const byGross = (a, b) => b.gross - a.gross || (a.name < b.name ? -1 : 1);
 
+    // Card payment breaks -------------------------------------------------------------
+    // A gap of CARD_STOP_DAYS+ between two card payments is a spell off card
+    // (paid another way, then came back); the same silence up to the end of the
+    // range means the customer has stopped paying by card as of their last one.
+    for (const c of named) {
+      c.breaks = [];
+      for (let i = 1; i < c.days.length; i++) {
+        const g = c.days[i] - c.days[i - 1];
+        if (g >= CARD_STOP_DAYS) c.breaks.push({ from: c.days[i - 1], to: c.days[i], days: g });
+      }
+      c.stopped = to - c.lastDay >= CARD_STOP_DAYS;
+    }
+    // A tracking period counts as off card when it lies wholly inside a break.
+    const offCard = (c, p) => c.breaks.some((b) => b.from < p.start && p.end < b.to);
+    const cardStop = {
+      days: CARD_STOP_DAYS, known: spanDays > CARD_STOP_DAYS, since: to - CARD_STOP_DAYS + 1,
+      stopped: named.filter((c) => c.stopped)
+        .map((c) => ({ name: c.name, gross: c.gross / 100, count: c.count, firstDay: c.firstDay, lastDay: c.lastDay, since: to - c.lastDay }))
+        .sort((a, b) => b.gross - a.gross || (a.name < b.name ? -1 : 1)),
+      back: named.filter((c) => !c.stopped && c.breaks.length)
+        .map((c) => { const b = c.breaks[c.breaks.length - 1]; return { name: c.name, gross: c.gross / 100, offFrom: b.from, backOn: b.to, days: b.days, breaks: c.breaks.length }; })
+        .sort((a, b) => b.gross - a.gross || (a.name < b.name ? -1 : 1)),
+    };
+
     const top15 = buyers.slice().sort(byGross).slice(0, 15);
 
     // Pareto: named customers by revenue, the one-time aggregate placed last.
@@ -429,38 +462,47 @@
       return { name: c.name, oneTime: c.oneTime, avg: active ? c.gross / active : 0, active };
     }).sort((a, b) => b.avg - a.avg || (a.name < b.name ? -1 : 1)).slice(0, 20);
 
-    // Payment cadence: mean gap between distinct successful-charge days.
-    const cadence = named.filter((c) => c.days.length >= 3).map((c) => {
-      const gaps = c.days.slice(1).map((d, i) => d - c.days[i]);
+    // Payment cadence: mean gap between distinct successful-charge days, for
+    // customers still paying by card. Breaks of CARD_STOP_DAYS+ are time spent
+    // paying another way, not part of the rhythm, so they are left out.
+    const cadence = named.filter((c) => !c.stopped).map((c) => {
+      const gaps = c.days.slice(1).map((d, i) => d - c.days[i]).filter((g) => g < CARD_STOP_DAYS);
+      if (gaps.length < 2) return null;
       const avg = mean(gaps);
       const since = to - c.lastDay;
       return { name: c.name, avgGap: avg, since, ratio: avg ? since / avg : null, gross: c.gross, chargeDays: c.days.length };
-    }).sort((a, b) => a.avgGap - b.avgGap || (a.name < b.name ? -1 : 1));
+    }).filter(Boolean).sort((a, b) => a.avgGap - b.avgGap || (a.name < b.name ? -1 : 1));
     const drifting = cadence.filter((c) => c.since >= 7 && c.ratio >= 2).sort((a, b) => b.gross - a.gross);
 
     // Momentum: named customers, tracked by week or month per the timeframe ----------
     const periods = trackingPeriods(from, to, tf.period);
     const P = periods.length;
-    const momentum = { slopes: [], attention: [], quiet: [], periods: P, periodNoun: tf.period, timeframe: tf.key, needTrend: tf.trendMin };
+    const momentum = { slopes: [], attention: [], periods: P, periodNoun: tf.period, timeframe: tf.key, needTrend: tf.trendMin };
     const pseries = new Map(named.map((c) => [c.name, new Array(P).fill(0)]));
     for (const r of sales) {
       if (r.oneTime) continue;
       const i = periodIndex(periods, r.day);
       if (i >= 0 && i < P) pseries.get(r.customer)[i] += r.cents;
     }
-    const gapOf = new Map(cadence.map((c) => [c.name, c.avgGap]));
-    // Trend: linear slope per period (the last 12 months for multi-year exports).
+    // Customers who stopped paying by card are not trending down or slipping:
+    // they pay another way now, and are listed under "Stopped paying by card".
+    const tracked = named.filter((c) => !c.stopped);
+    // Trend: linear slope per period (the last 12 months for multi-year exports),
+    // skipping periods the customer spent wholly off card.
     const t0 = tf.trendMax ? Math.max(0, P - tf.trendMax) : 0;
     momentum.trendFrom = P ? periods[t0].label : null;
     momentum.trendTo = P ? periods[P - 1].label : null;
     if (P - t0 >= tf.trendMin) {
-      for (const c of named) {
+      for (const c of tracked) {
         const first = periodIndex(periods, c.firstDay);
         if (first >= P) continue;
-        const ys = pseries.get(c.name).slice(Math.max(t0, first, 0));
+        const all = pseries.get(c.name);
+        const xs = [];
+        for (let i = Math.max(t0, first, 0); i < P; i++) if (!offCard(c, periods[i])) xs.push(i);
+        const ys = xs.map((i) => all[i]);
         const activeN = ys.filter((v) => v > 0).length;
         if (ys.length < tf.trendMin || activeN < tf.trendActive) continue;
-        momentum.slopes.push({ name: c.name, slope: slope(ys) / 100, buckets: ys.length, active: activeN, gross: c.gross });
+        momentum.slopes.push({ name: c.name, slope: slope(ys, xs) / 100, buckets: ys.length, active: activeN, gross: c.gross, offCard: P - Math.max(t0, first, 0) - xs.length });
       }
       momentum.slopes.sort((a, b) => b.slope - a.slope || (a.name < b.name ? -1 : 1));
     }
@@ -481,10 +523,13 @@
       const span = (idx) => (tf.period === 'week' ? dayRange(periods[idx[0]].start, periods[idx[idx.length - 1]].end)
         : idx.length === 1 ? periods[idx[0]].label : periods[idx[0]].label + ' – ' + periods[idx[idx.length - 1]].label);
       momentum.window = { kind: wKind, recent: span(rIdx), base: span(bIdx), recentN: rIdx.length, baseN: bIdx.length };
-      for (const c of named) {
+      for (const c of tracked) {
         const ys = pseries.get(c.name);
-        const baseAvg = mean(bIdx.map((i) => ys[i]));
-        const recentAvg = mean(rIdx.map((i) => ys[i]));
+        const on = (idx) => idx.filter((i) => !offCard(c, periods[i]));
+        const bOn = on(bIdx), rOn = on(rIdx);
+        if (!bOn.length || !rOn.length) continue;
+        const baseAvg = mean(bOn.map((i) => ys[i]));
+        const recentAvg = mean(rOn.map((i) => ys[i]));
         if (baseAvg <= 0) continue;
         const change = (recentAvg - baseAvg) / baseAvg;
         if (change <= -threshold) {
@@ -492,16 +537,6 @@
         }
       }
       momentum.attention.sort((a, b) => b.gap - a.gap || (a.name < b.name ? -1 : 1));
-    }
-    // Gone quiet: nothing in the last 2 periods (or since), after buying before,
-    // and longer than twice the customer's own usual gap when that is known.
-    if (P >= 3) {
-      const quietStart = periods[P - 2].start;
-      momentum.quietSince = quietStart;
-      momentum.quietLabels = [periods[P - 2].label, periods[P - 1].label];
-      momentum.quiet = named.filter((c) => c.lastDay < quietStart && c.count >= 2 && !(gapOf.has(c.name) && to - c.lastDay <= 2 * gapOf.get(c.name)))
-        .map((c) => ({ name: c.name, gross: c.gross / 100, lastDay: c.lastDay, since: to - c.lastDay, count: c.count }))
-        .sort((a, b) => b.gross - a.gross || (a.name < b.name ? -1 : 1));
     }
 
     // RFM ----------------------------------------------------------------------------
@@ -524,10 +559,12 @@
     }
 
     // Acquisition -------------------------------------------------------------------
-    // Customers first seen in the opening weeks were almost certainly customers
-    // already (the export just starts mid-relationship), so "new" only counts
-    // first purchases after that settling-in window.
-    // (warmupDays null = too little history to tell new from existing at all.)
+    // Customers first seen in the opening weeks were almost certainly paying by
+    // card already (the export just starts mid-relationship), so "started paying
+    // by card" only counts a first card payment after that settling-in window.
+    // It is not the same as a new customer: an existing account can move from
+    // EFT to card, or come back to card after a break, and one export can't
+    // tell those apart. (warmupDays null = too little history to tell at all.)
     const newKnown = tf.warmupDays != null && spanDays > tf.warmupDays;
     const warmEnd = newKnown ? from + tf.warmupDays - 1 : to;
     const firstBucket = new Map(named.map((c) => [c.name, c.firstDay > warmEnd ? idxOf(c.firstDay) : -1]));
@@ -607,7 +644,7 @@
       runRate: { perWeek: (gross / spanDays) * 7, perMonth: (gross / spanDays) * (365.25 / 12) },
       series: { gross: s.gross, net, refunds: s.refunds, count: s.count, rolling, pop, hi, lo },
       totals, deltas, retry: Object.assign({}, retry, { looseRecovered }),
-      top15, pareto, concentration, perActive, cadence, drifting, momentum, rfm, acq,
+      top15, pareto, concentration, perActive, cadence, drifting, momentum, cardStop, rfm, acq,
       risk: { MIN_TX, failureByCustomer, eligibleForFailure, cardMix, reasons: Object.values(reasons).sort((a, b) => b.count - a.count), voidCustomers },
       duplicates, rowsInScope: scope.length, rowsInRange: inRange.length,
       oneTime: oneTimeCust ? { gross: oneTimeCust.gross, count: oneTimeCust.count } : null,
@@ -617,7 +654,7 @@
   const api = {
     analyse, retryChains, buildBuckets, bucketStart, nextStart, autoUnit, slope, quartileScores, segmentOf,
     TIMEFRAMES, timeframeOf, trackingPeriods, periodIndex, dayRange,
-    ymd, dayOf, isoDate, longDate, UNITS, UNIT_LABEL, UNIT_NOUN, ROLLING, SEGMENTS, MONTHS, ONE_TIME, DAY_MS,
+    ymd, dayOf, isoDate, longDate, UNITS, UNIT_LABEL, UNIT_NOUN, ROLLING, SEGMENTS, MONTHS, ONE_TIME, DAY_MS, CARD_STOP_DAYS,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.CCMetrics = api;

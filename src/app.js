@@ -255,9 +255,11 @@
       : 'the tiles compare the ' + a.deltas.label.replace(/^Last /, 'last ').replace(' vs ', ' with the ');
     const track = tf.period === 'week' ? 'customers are tracked week by week (7-day blocks counted back from ' + fmtDay(a.to) + ')'
       : 'customers are tracked month by month' + (tf.trendMax ? ', with trends over the last 12 months and the baseline taken from the same months a year earlier' : '');
-    const fresh = a.acq.newKnown ? 'customers first seen in the first ' + plural(a.acq.warmupDays, 'day') + ' count as existing customers, not new ones'
-      : 'new and existing customers can’t be told apart yet (some regulars only order monthly)';
-    return 'This export covers ' + days + ' (' + tf.label + '), so ' + cmp + '; ' + track + '; and ' + fresh + '. Charts are grouped by ' + a.unit + '.';
+    const fresh = a.acq.newKnown ? 'a first card payment after the first ' + plural(a.acq.warmupDays, 'day') + ' counts as starting to pay by card'
+      : 'it is too short to tell who started paying by card (some regulars only pay monthly)';
+    const stop = a.cardStop.known ? 'customers with no card payment in the last ' + a.cardStop.days + ' days are recorded as having stopped paying by card'
+      : 'it is too short to tell who stopped paying by card (that takes ' + a.cardStop.days + ' days without a card payment)';
+    return 'This export covers ' + days + ' (' + tf.label + '), so ' + cmp + '; ' + track + '; ' + fresh + '; and ' + stop + '. Charts are grouped by ' + a.unit + '.';
   }
 
   function renderNotices(a) {
@@ -422,26 +424,40 @@
       if (worst && worst.slope < 0) cap.append(' Steepest decline: ' + worst.name + ' (' + F.signedMoney(worst.slope) + ' per ' + n + ').');
       if (best && best.slope > 0) cap.append(' Fastest growth: ' + best.name + ' (' + F.signedMoney(best.slope) + ' per ' + n + ').');
       if (!state.slopesAll && all.length > K * 2) cap.append(' Showing the ' + K + ' fastest-growing and ' + K + ' fastest-declining.');
+      cap.append(' Customers who stopped paying by card are left out, and ' + n + 's a customer spent entirely off card (a break of ' + a.cardStop.days + '+ days between card payments) are skipped rather than counted as $0.');
     }
     renderAttention(a);
+    renderCardStop(a);
+  }
 
-    // Gone quiet
-    const qbox = clear($('tbl-quiet'));
-    if (mo.quietSince == null) {
-      $('s-quiet').textContent = '';
-      qbox.append(el('p', { class: 'empty-row', text: 'Needs at least 3 full ' + n + 's of data; this export has ' + mo.periods + '.' }));
-      $('cap-quiet').textContent = '';
-    } else {
-      $('s-quiet').textContent = 'No successful charge in ' + mo.quietLabels.join(' or ') + ' (or since), after at least 2 charges before, and silent for more than twice their usual gap · biggest accounts first';
-      qbox.append(table([
-        { key: 'name', label: 'Customer', name: true, fmt: (r) => nameCell(r.name) },
-        { key: 'gross', label: 'Lifetime revenue', num: true, fmt: (r) => F.money(r.gross) },
-        { key: 'count', label: 'Charges', num: true },
-        { key: 'lastDay', label: 'Last charge', num: true, fmt: (r) => fmtDay(r.lastDay) },
-        { key: 'since', label: 'Days since', num: true, fmt: (r) => F.int(r.since) },
-      ], mo.quiet, { sort: { key: 'gross', dir: -1 }, empty: 'Every recently active customer has bought in the last 2 ' + n + 's.', good: true }));
-      const lost = mo.quiet.reduce((s, r) => s + r.gross, 0);
-      $('cap-quiet').textContent = mo.quiet.length ? plural(mo.quiet.length, 'customer') + ' with ' + F.money(lost) + ' of revenue between them have stopped buying. A big account going silent matters more than a small one, so they’re sorted by lifetime revenue.' : '';
+  /** Stopped paying by card: 60+ days since the last card payment. A record of
+   *  when card payments ended (presumed moved to EFT or another method), not a
+   *  churn alarm. Customers back on card after a break are summarised below. */
+  function renderCardStop(a) {
+    const cs = a.cardStop;
+    const box = clear($('tbl-stopped'));
+    const cap = clear($('cap-stopped'));
+    if (!cs.known) {
+      $('s-stopped').textContent = '';
+      box.append(el('p', { class: 'empty-row', text: 'Needs more than ' + cs.days + ' days of data; this export covers ' + plural(a.spanDays, 'day') + '. Customers who are late against their usual rhythm are listed under Overdue against their own rhythm.' }));
+      return;
+    }
+    $('s-stopped').textContent = 'No successful card payment in the last ' + cs.days + ' days (since ' + fmtDay(cs.since) + '). “Stopped as of” is their last card payment; presumed to pay another way now (EFT, cheque) or to have stopped trading · biggest accounts first';
+    box.append(table([
+      { key: 'name', label: 'Customer', name: true, fmt: (r) => nameCell(r.name) },
+      { key: 'lastDay', label: 'Stopped as of', num: true, fmt: (r) => fmtDay(r.lastDay) },
+      { key: 'gross', label: 'Card revenue', num: true, fmt: (r) => F.money(r.gross) },
+      { key: 'count', label: 'Payments', num: true },
+      { key: 'since', label: 'Days since', num: true, fmt: (r) => F.int(r.since) },
+    ], cs.stopped, { sort: { key: 'gross', dir: -1 }, empty: 'Every customer in this range has paid by card in the last ' + cs.days + ' days.', good: true }));
+    if (cs.stopped.length) {
+      const tot = cs.stopped.reduce((x, r) => x + r.gross, 0);
+      cap.append(plural(cs.stopped.length, 'customer') + ' (' + F.money(tot) + ' of card revenue in this range) stopped paying by card. A gap of ' + cs.days + '+ days almost always means the account moved to EFT or another payment method, occasionally that it stopped trading, so treat this as a record of when card payments ended rather than lost sales. These customers are left out of the trend chart, Needs attention and Payment cadence. ');
+    }
+    if (cs.back.length) {
+      const eg = cs.back.slice(0, 4).map((r) => r.name + ' (off card ' + fmtDay(r.offFrom) + ' – ' + fmtDay(r.backOn) + ')');
+      cap.append(el('strong', { text: plural(cs.back.length, 'customer') + ' came back to card after a break of ' + cs.days + '+ days' }),
+        ': ' + eg.join('; ') + (cs.back.length > 4 ? '; and ' + (cs.back.length - 4) + ' more' : '') + '. The time they spent off card is skipped in their trend and Needs attention rather than counted as a slump.');
     }
   }
 
@@ -468,7 +484,8 @@
     const total = mo.attention.reduce((s, r) => s + r.gap, 0);
     $('cap-attention').textContent = mo.attention.length
       ? plural(mo.attention.length, 'customer') + (mo.attention.length === 1 ? ' is' : ' are') + ' spending ' + F.money(total) + ' less per ' + n + ' than their baseline, in total. Shortfall = baseline − recent, per ' + n + '. Sorted by shortfall; click a column header to re-sort.' +
-        (w.recentN === 1 && n === 'week' ? ' With only a few weeks of data one late order is enough to appear here; check Days since before calling.' : '')
+        (w.recentN === 1 && n === 'week' ? ' With only a few weeks of data one late order is enough to appear here; check Days since before calling.' : '') +
+        ' Customers who stopped paying by card are not listed here, and ' + n + 's spent entirely off card are left out of both averages.'
       : '';
   }
 
@@ -539,7 +556,7 @@
       C.cadence(list, t, $('box-cadence'));
       const gaps = cad.map((x) => x.avgGap).sort((x, y) => x - y);
       const med = gaps.length % 2 ? gaps[(gaps.length - 1) / 2] : (gaps[gaps.length / 2 - 1] + gaps[gaps.length / 2]) / 2;
-      $('cap-cadence').textContent = 'The typical customer pays every ' + med.toFixed(1) + ' days (median). A ◆ far to the right of its bar means that customer is overdue compared with their own habit; amber ◆ = at least twice their usual gap. ' + plural(a.drifting.length, 'customer') + ' overdue in total.';
+      $('cap-cadence').textContent = 'The typical customer pays every ' + med.toFixed(1) + ' days (median). A ◆ far to the right of its bar means that customer is overdue compared with their own habit; amber ◆ = at least twice their usual gap. ' + plural(a.drifting.length, 'customer') + ' overdue in total. Only customers still paying by card are shown, and breaks of ' + a.cardStop.days + '+ days are left out of the usual gap.';
     }
     const dt = clear($('tbl-drifting'));
     dt.append(table([
@@ -549,6 +566,7 @@
       { key: 'ratio', label: '× usual gap', num: true, fmt: (r) => el('span', { class: 'neg', text: r.ratio.toFixed(1) + '×' }) },
       { key: 'gross', label: 'Revenue in period', num: true, fmt: (r) => F.money(r.gross / 100) },
     ], a.drifting, { sort: { key: 'gross', dir: -1 }, empty: 'Nobody is overdue against their usual rhythm.', good: true }));
+    $('cap-drifting').textContent = a.drifting.length ? 'These customers still count as card payers (under ' + a.cardStop.days + ' days since their last card payment) but are late against their own habit, so this is the list worth a call. At ' + a.cardStop.days + ' days they move to Stopped paying by card.' : '';
   }
 
   // ---------------------------------------------------------------------------
@@ -612,13 +630,13 @@
     const totalNew = a.acq.newC.reduce((x, y) => x + y, 0);
     if (!a.acq.newKnown) {
       cap.append('Bars show customers with a successful charge in each ' + n + '; the line is the running count of unique customers. ');
-      cap.append(el('strong', { text: 'A few weeks of data can’t show which customers are new' }), ': most customers order every 1–2 weeks but some only monthly, so a regular can appear for the first time late in a short export. Load at least two months to see new customers. ');
+      cap.append(el('strong', { text: 'A few weeks of data can’t show who started paying by card' }), ': most customers pay every 1–2 weeks but some only monthly, so a regular can appear for the first time late in a short export. Load at least two months to see this. ');
       cap.append(cum[cum.length - 1] + ' unique customers in total.');
     } else {
-      cap.append('Orange = new customers; blue = existing customers. The line is the running count of unique customers: if it flattens while the bars hold steady, the base is churning sideways rather than growing. ');
+      cap.append('Orange = customers making their first card payment of this export; blue = customers who had already paid by card in it. The line is the running count of unique card-paying customers. ');
       cap.append('An export starts part-way through every relationship, so the ' + plural(a.acq.existingAtStart, 'customer') + ' first seen in the first ' + plural(a.acq.warmupDays, 'day') +
-        ' count as existing customers; “new” means a first purchase after that. ');
-      cap.append(el('strong', { text: plural(totalNew, 'new customer') }), ' in this export; ' + cum[cum.length - 1] + ' unique customers in total.');
+        ' count as already paying by card. A first card payment after that is not necessarily a new customer: it can be an existing account moving from EFT to card, or coming back after a break, which one export cannot tell apart. ');
+      cap.append(el('strong', { text: plural(totalNew, 'customer') + ' started paying by card' }), ' in this export; ' + cum[cum.length - 1] + ' unique card-paying customers in total.');
     }
     if (c.length) { const lastC = c[c.length - 1]; cap.append(' ' + (a.acq.newC[lastC] + a.acq.returning[lastC]) + ' active in ' + a.buckets[lastC].short + '.'); }
   }
@@ -900,11 +918,15 @@
         top5: a.concentration.top5, top10: a.concentration.top10, n80: a.concentration.n80,
         slopes: Object.fromEntries(a.momentum.slopes.map((s) => [s.name, s.slope])),
         rfmSegments: a.rfm ? Object.fromEntries(a.rfm.segments.map((s) => [s.name, s.count])) : null,
-        attention: a.momentum.attention.map((x) => x.name), quiet: a.momentum.quiet.map((x) => x.name),
+        attention: a.momentum.attention.map((x) => x.name), threshold: a.threshold,
+        stopped: a.cardStop.stopped.map((x) => ({ name: x.name, lastDay: M.isoDate(x.lastDay), gross: x.gross })),
+        backOnCard: a.cardStop.back.map((x) => ({ name: x.name, offFrom: M.isoDate(x.offFrom), backOn: M.isoDate(x.backOn) })),
+        late: a.drifting.map((x) => x.name), cadence: Object.fromEntries(a.cadence.map((x) => [x.name, x.avgGap])),
+        attentionDetail: a.momentum.attention.map((x) => ({ name: x.name, baseAvg: x.baseAvg, recentAvg: x.recentAvg })),
         duplicates: a.duplicates.length,
         timeframe: a.timeframe.key, popLag: a.popLag, trackedBy: a.momentum.periodNoun, trackingPeriods: a.momentum.periods,
         compare: a.deltas ? { kind: a.deltas.kind, label: a.deltas.label, a: a.deltas.a.map(M.isoDate), b: a.deltas.b.map(M.isoDate), cur: a.deltas.values.gross.cur, prev: a.deltas.values.gross.prev } : null,
-        attentionWindow: a.momentum.window || null, quietCount: a.momentum.quiet.length, newCustomers: a.acq.newC.reduce((x, y) => x + y, 0),
+        attentionWindow: a.momentum.window || null, stoppedCount: a.cardStop.stopped.length, startedByCard: a.acq.newC.reduce((x, y) => x + y, 0),
         yoy: a.yoy ? a.yoy.years.map((y) => ({ year: y.year, total: y.total, months: y.months })) : null,
         groups: { namesGrouped: [...state.members.values()].reduce((n, l) => n + l.length, 0), customers: state.members.size, pending: pendingSuggestions().length, suggested: state.suggestions.map((x) => ({ name: x.name, members: x.members.map(G.display) })), manualAssigned: state.manualAssigned || 0 },
         quality: { parsed: state.quality.parsed, total: state.quality.totalDataRows, blankCustomer: state.quality.blankCustomer, blankStatus: state.quality.blankStatus, negative: state.quality.negative.length, zero: state.quality.zero.length, badDate: state.quality.badDate.length },

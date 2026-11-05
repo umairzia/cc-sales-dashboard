@@ -205,9 +205,40 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None) -> int:
     for c, i, v in zip(inside.cust, pidx[inside.index], inside.cents):
         series[c][i] += v
 
+    # Card payments: 60+ days between two card payments is a spell off card;
+    # 60+ days from the last one to the end of the range means the customer
+    # stopped paying by card as of that day (presumed EFT or stopped trading).
+    STOP = 60
+    pay_days = {c: sorted(set(d)) for c, d in named.groupby("cust").day}
+    breaks = {c: [(a, b) for a, b in zip(d, d[1:]) if (b - a).days >= STOP] for c, d in pay_days.items()}
+    stopped = {c for c, d in pay_days.items() if (hi - d[-1]).days >= STOP}
+    iso = lambda d: d.strftime("%Y-%m-%d")
+    eq("stopped paying by card (name, as of)", sorted((c, iso(pay_days[c][-1])) for c in stopped),
+       sorted((x["name"], x["lastDay"]) for x in dash["stopped"]))
+    eq("back on card after a break (name, off, back)",
+       sorted((c, iso(b[-1][0]), iso(b[-1][1])) for c, b in breaks.items() if b and c not in stopped),
+       sorted((x["name"], x["offFrom"], x["backOn"]) for x in dash["backOnCard"]))
+
+    def off_card(c, i):
+        # A tracking period wholly inside a break is time spent paying another way.
+        s0, s1 = bounds[i]
+        return any(a < s0 and s1 < b for a, b in breaks[c])
+
+    # Usual gap: on-card gaps only (breaks left out), current card payers only.
+    cad = {}
+    for c, d in pay_days.items():
+        gaps = [(b - a).days for a, b in zip(d, d[1:]) if (b - a).days < STOP]
+        if c not in stopped and len(gaps) >= 2:
+            cad[c] = float(np.mean(gaps))
+    eq("payment cadence customers", sorted(cad), sorted(dash["cadence"]))
+    eq("max |usual gap difference| (days)", max((abs(v - dash["cadence"].get(c, np.inf)) for c, v in cad.items()), default=0.0), 0.0, 1e-9)
+    since = {c: (hi - d[-1]).days for c, d in pay_days.items()}
+    eq("overdue against their own rhythm", sorted(c for c, g in cad.items() if since[c] >= 7 and since[c] / g >= 2), sorted(dash["late"]))
+
     # Trend slopes: last 12 months for multi-year exports, otherwise all
-    # periods, from the customer's first period; short exports need 3 periods
-    # with 2 active, the rest 4 with 3 active.
+    # periods, from the customer's first period, skipping periods spent wholly
+    # off card; customers who stopped paying by card have no trend. Short
+    # exports need 3 periods with 2 active, the rest 4 with 3 active.
     need, need_active = (3, 2) if tf == "short" else (4, 3)
     t0 = max(0, len(bounds) - 12) if tf == "multi" else 0
     first_day = named.groupby("cust").day.min()
@@ -215,12 +246,13 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None) -> int:
     if len(bounds) - t0 >= need:
         for cust, ys_all in series.items():
             f = period_of(first_day[cust])
-            if f >= len(bounds):
+            if f >= len(bounds) or cust in stopped:
                 continue
-            ys = ys_all[max(t0, f, 0):]
+            xs = [i for i in range(max(t0, f, 0), len(bounds)) if not off_card(cust, i)]
+            ys = ys_all[xs]
             if len(ys) < need or (ys > 0).sum() < need_active:
                 continue
-            mine[cust] = np.polyfit(np.arange(len(ys)), ys, 1)[0] / 100
+            mine[cust] = np.polyfit(np.array(xs, dtype=float), ys, 1)[0] / 100
     theirs = dash["slopes"]
     eq("customers with a trend slope", sorted(mine), sorted(theirs))
     worst = max((abs(mine[k] - theirs.get(k, np.inf)) for k in mine), default=0.0)
@@ -228,6 +260,36 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None) -> int:
     if mine:
         sample = max(mine, key=lambda k: by_cust.get(k, 0))
         eq(f"slope for {sample!r}", mine[sample], theirs.get(sample), 1e-6)
+
+    # Needs attention: average per on-card period, recent vs baseline. Recent =
+    # last 2 weeks (short), 4 weeks (medium) or 3 months; baseline = the same
+    # number just before, or the same months a year earlier (multi-year).
+    P = len(bounds)
+    n_recent, n_base = (2, 2) if tf == "short" else (4, 4) if tf == "medium" else (3, 3)
+    r_idx = b_idx = None
+    if tf == "multi" and P >= n_recent + 12:
+        r_idx = list(range(P - n_recent, P))
+        b_idx = [i - 12 for i in r_idx]
+    elif P >= 2:
+        R = n_recent if P >= n_recent + n_base else max(1, P // 2)
+        Bn = min(n_base, P - R)
+        r_idx, b_idx = list(range(P - R, P)), list(range(P - R - Bn, P - R))
+    attn = {}
+    if r_idx:
+        for cust, ys in series.items():
+            if cust in stopped:
+                continue
+            b_on = [i for i in b_idx if not off_card(cust, i)]
+            r_on = [i for i in r_idx if not off_card(cust, i)]
+            if not b_on or not r_on:
+                continue
+            base, recent = ys[b_on].mean(), ys[r_on].mean()
+            if base > 0 and (recent - base) / base <= -dash["threshold"]:
+                attn[cust] = (base / 100, recent / 100)
+    eq("needs attention", sorted(attn), sorted(dash["attention"]))
+    got = {x["name"]: (x["baseAvg"], x["recentAvg"]) for x in dash["attentionDetail"]}
+    eq("max |needs-attention average difference| ($)",
+       max((abs(v[k] - got.get(c, (np.inf, np.inf))[k]) for c, v in attn.items() for k in (0, 1)), default=0.0), 0.0, 1e-9)
 
     # KPI comparison windows: last 7 days vs previous 7 (short); last 28/14/7
     # vs the same before (medium, the longest that fits twice); last complete

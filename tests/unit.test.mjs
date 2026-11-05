@@ -286,6 +286,42 @@ test('timeframe profiles: what each comparison means for 3 weeks, 3 months, a ye
   assert.equal(a.momentum.window.kind, 'yoy');
   assert.equal(a.momentum.trendFrom, "Jan '25"); // trend over the last 12 months
   assert.deepEqual(a.yoy.years.map((y) => y.year), [2023, 2024, 2025]);
-  // A regular weekly customer is never "gone quiet" or flagged, at any timeframe.
-  assert.equal(a.momentum.quiet.length, 0);
+  // A regular weekly customer is never stopped, late or flagged, at any timeframe.
+  assert.deepEqual([a.cardStop.stopped.length, a.drifting.length, a.momentum.attention.length], [0, 0, 0]);
+});
+
+test('60+ days without a card payment: stopped paying by card, not slipping; breaks are skipped', () => {
+  const d = (s) => P.parseDate(s).day;
+  const from = d('05/01/2026'), to = from + 175;  // 176 days: weekly tracking
+  const rows = [];
+  const add = (customer, day, cents) => rows.push({ day, second: rows.length, line: rows.length, customer, oneTime: false, cents, card: 'VISA', status: 'Batched' });
+  for (let day = from; day <= to; day += 7) add('Weekly', day, 10000);
+  // Switched to EFT: weekly until 61 days before the end, then nothing.
+  for (let day = from; day <= to - 61; day += 7) add('Switched', day, 20000);
+  // Off card for 13 weeks in the middle (91 days between card payments), then back.
+  for (let day = from; day <= to; day += 7) if (day < from + 35 || day > from + 112) add('Break', day, 15000);
+  // Late but not stopped: weekly, then 30 days of silence.
+  for (let day = from; day <= to - 30; day += 7) add('Late', day, 12000);
+  rows.sort((x, y) => x.day - y.day || x.second - y.second);
+  const a = M.analyse(rows, {});
+  assert.equal(a.timeframe.key, 'medium');
+  assert.equal(M.CARD_STOP_DAYS, 60);
+  assert.deepEqual(a.cardStop.stopped.map((x) => x.name), ['Switched']);
+  assert.equal(a.cardStop.stopped[0].since >= 60, true);
+  assert.deepEqual(a.cardStop.back.map((x) => [x.name, x.days]), [['Break', 91]]);
+  // The stopped customer is a record, not a declining trend or an attention item.
+  assert.equal(a.momentum.slopes.some((x) => x.name === 'Switched'), false);
+  assert.equal(a.momentum.attention.some((x) => x.name === 'Switched'), false);
+  assert.equal(a.cadence.some((x) => x.name === 'Switched'), false);
+  // Off-card weeks are skipped, so a steady customer who took a break is flat.
+  const br = a.momentum.slopes.find((x) => x.name === 'Break');
+  assert.equal(Math.abs(br.slope) < 1e-9, true);
+  assert.equal(br.offCard > 0, true);
+  assert.equal(a.cadence.find((x) => x.name === 'Break').avgGap, 7);   // the break is not part of the rhythm
+  // Late (30 days, usual gap 7) is the list worth a call.
+  assert.deepEqual(a.drifting.map((x) => x.name), ['Late']);
+  // Too short to tell: 45 days can never show a 60-day silence.
+  const b = M.analyse(rows.filter((r) => r.day >= to - 44), {});
+  assert.equal(b.cardStop.known, false);
+  assert.equal(b.cardStop.stopped.length, 0);
 });
