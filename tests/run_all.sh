@@ -6,6 +6,7 @@
 #   tests/run_all.sh a.csv [b.csv ...]   # also check real exports (results go
 #                                        # to a temp dir outside the repo)
 #   GROUPS_FILE=groups.csv tests/run_all.sh a.csv   # …and again with customer groups
+#   GROUPS_FILE=groups.csv NOTES_FILE=notes.csv tests/run_all.sh a.csv   # …and with customer notes
 # Needs: python3 + pandas + numpy, node + playwright (Chromium).
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -31,6 +32,8 @@ run node tests/e2e.mjs sample-data/sample_transactions.csv --out "$OUT" --name s
 run python3 tests/verify_metrics.py sample-data/sample_transactions.csv "$OUT/sample.json"
 run node tests/e2e.mjs sample-data/sample_transactions.csv --out "$OUT" --name sample_grouped --groups tests/fixtures/sample_customer_groups.csv
 run python3 tests/verify_metrics.py sample-data/sample_transactions.csv "$OUT/sample_grouped.json" --groups tests/fixtures/sample_customer_groups.csv
+run node tests/e2e.mjs sample-data/sample_transactions.csv --out "$OUT" --name sample_notes --groups tests/fixtures/sample_customer_groups.csv --notes tests/fixtures/sample_customer_notes.csv --interact
+run python3 tests/verify_metrics.py sample-data/sample_transactions.csv "$OUT/sample_notes.json" --groups tests/fixtures/sample_customer_groups.csv --notes tests/fixtures/sample_customer_notes.csv
 
 step "Browser: timeframes (3 weeks, 3 months, 3 years, 5 years) and edge cases"
 run node tests/e2e.mjs tests/fixtures/span_3_weeks.csv --out "$OUT" --expect-unit day --expect-timeframe short --interact
@@ -53,6 +56,7 @@ run node tests/e2e.mjs tests/fixtures/not_a_csv.csv --out "$OUT" --expect-error 
 REAL=$(mktemp -d)
 GROUPS_ARGS=()
 [ -n "${GROUPS_FILE:-}" ] && GROUPS_ARGS=(--groups "$GROUPS_FILE")
+[ -n "${NOTES_FILE:-}" ] && GROUPS_ARGS+=(--notes "$NOTES_FILE")
 for f in "$@"; do
   step "Browser + pandas: $(basename "$f") (results kept outside the repo)"
   n=$(basename "$f" .csv)

@@ -34,6 +34,9 @@ const section = (page, heading) => page.locator('section.section', { has: page.l
 await shoot('light', async (page) => {
   await page.screenshot({ path: resolve(out, 'empty-state.png') });
   await load(page, sample);
+  // The synthetic notes fixture, so the Lost customers table and the notes dialog have content.
+  await page.setInputFiles('#noteLoadInput', resolve(root, 'tests', 'fixtures', 'sample_customer_notes.csv'));
+  await page.waitForFunction(() => window.ccDashboard.summary().notes.applied > 0);
   await page.screenshot({ path: resolve(out, 'overview.png'), clip: { x: 0, y: 0, width: 1360, height: 1180 } });
   await section(page, 'h-mom').screenshot({ path: resolve(out, 'momentum.png') });
   await section(page, 'h-cust').locator('.grid > article').nth(1).screenshot({ path: resolve(out, 'concentration.png') });
@@ -42,6 +45,9 @@ await shoot('light', async (page) => {
   await page.click('#groupsBtn');
   await page.locator('#groupsDialog').screenshot({ path: resolve(out, 'customer-groups.png') });
   await page.click('#groupsClose');
+  await page.click('#notesBtn');
+  await page.locator('#notesDialog').screenshot({ path: resolve(out, 'customer-notes.png') });
+  await page.click('#notesClose');
   await page.click('#dq summary');
   await page.locator('#dq').screenshot({ path: resolve(out, 'data-quality.png') });
   await load(page, resolve(root, 'tests', 'fixtures', 'missing_status_column.csv'));

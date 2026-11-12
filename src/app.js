@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  const P = window.CCParse, M = window.CCMetrics, C = window.CCCharts, F = window.CCFormat, G = window.CCGroups;
+  const P = window.CCParse, M = window.CCMetrics, C = window.CCCharts, F = window.CCFormat, G = window.CCGroups, N = window.CCNotes;
   const $ = (id) => document.getElementById(id);
 
   const state = {
@@ -13,22 +13,31 @@
     // Customer groups: { "label in export": "customer it belongs to" }, kept in this browser.
     groups: {}, dismissed: [], storeOk: true,
     mapped: null, profiles: new Map(), suggestions: [], members: new Map(),
+    // Customer notes: { normalised name: {name, paysBy, cycle, status, since, sinceText, note} }, kept in this browser.
+    notes: {},
   };
 
   // ---------------------------------------------------------------------------
   // Customer groups: persistence (this browser only) and application
   // ---------------------------------------------------------------------------
   const STORE_KEY = 'ccdash.customerGroups.v1';
+  const NOTES_KEY = 'ccdash.customerNotes.v1';
   function loadStore() {
     try {
       const v = JSON.parse(window.localStorage.getItem(STORE_KEY) || 'null');
       if (v && v.groups && typeof v.groups === 'object') { state.groups = v.groups; state.dismissed = Array.isArray(v.dismissed) ? v.dismissed : []; }
+      const n = JSON.parse(window.localStorage.getItem(NOTES_KEY) || 'null');
+      if (n && typeof n === 'object') state.notes = n;
     } catch (e) { state.storeOk = false; }
   }
   function saveStore() {
-    try { window.localStorage.setItem(STORE_KEY, JSON.stringify({ groups: state.groups, dismissed: state.dismissed })); state.storeOk = true; }
-    catch (e) { state.storeOk = false; }
+    try {
+      window.localStorage.setItem(STORE_KEY, JSON.stringify({ groups: state.groups, dismissed: state.dismissed }));
+      window.localStorage.setItem(NOTES_KEY, JSON.stringify(state.notes));
+      state.storeOk = true;
+    } catch (e) { state.storeOk = false; }
   }
+  const noteOf = (name) => state.notes[N.norm(name)] || null;
   const resolve = (label) => state.groups[label] || label;
   const sugKey = (s) => s.members.slice().sort().join('\u0000');
 
@@ -70,9 +79,11 @@
   const clear = (node) => { while (node.firstChild) node.removeChild(node.firstChild); return node; };
   const nameCell = (name, oneTime) => {
     const mem = state.members.get(name);
+    const note = oneTime ? null : noteOf(name);
     return [name,
       oneTime ? el('span', { class: 'tag agg', title: 'Not a customer: an aggregate of unrelated cards keyed in once', text: 'aggregate †' }) : null,
-      mem ? el('span', { class: 'tag grp', title: 'One customer, shown under these names in the export: ' + mem.map(G.display).join(' + '), text: mem.length > 1 ? mem.length + ' names' : 'grouped' }) : null];
+      mem ? el('span', { class: 'tag grp', title: 'One customer, shown under these names in the export: ' + mem.map(G.display).join(' + '), text: mem.length > 1 ? mem.length + ' names' : 'grouped' }) : null,
+      note ? el('span', { class: 'tag note', title: 'Customer note: ' + N.describe(note), text: note.status ? note.status : note.paysBy ? note.paysBy : note.cycle ? note.cycle : 'note' }) : null];
   };
 
   /** Sortable table. columns: {key,label,num,fmt(row)→string|Node[],sort(row)→value} */
@@ -181,7 +192,7 @@
   // Render pipeline
   // ---------------------------------------------------------------------------
   function analyse() {
-    state.analysis = M.analyse(state.mapped || state.rows, { from: state.from, to: state.to, unit: state.unit, status: state.status, threshold: state.threshold });
+    state.analysis = M.analyse(state.mapped || state.rows, { from: state.from, to: state.to, unit: state.unit, status: state.status, threshold: state.threshold, notes: state.notes });
     return state.analysis;
   }
 
@@ -265,6 +276,19 @@
   function renderNotices(a) {
     const box = clear($('notices'));
     box.append(notice('info', timeframeText(a)));
+    if (a.notesApplied) {
+      const cs = a.cardStop;
+      const bits = [];
+      if (cs.lost.length) bits.push(plural(cs.lost.length, 'lost customer'));
+      const eft = cs.stopped.filter((r) => r.declared).length; if (eft) bits.push(eft + ' on EFT or cheque');
+      const mon = Object.values(state.notes).filter((x) => x.cycle === 'monthly').length; if (mon) bits.push(mon + ' monthly');
+      const sea = Object.values(state.notes).filter((x) => x.cycle === 'seasonal').length; if (sea) bits.push(sea + ' seasonal');
+      const spo = Object.values(state.notes).filter((x) => x.cycle === 'sporadic' || x.cycle === 'on request' || x.paysBy === 'mixed').length; if (spo) bits.push(spo + ' with no regular rhythm');
+      box.append(notice('info', 'Customer notes apply to ' + plural(a.notesApplied, 'customer') + ' in this file' + (bits.length ? ' (' + bits.join(', ') + ')' : '') + '. Lists that need a rhythm or a baseline leave out customers the notes say have none.',
+        { label: 'Customer notes', onclick: openNotes }));
+    } else if (Object.keys(state.notes).length) {
+      box.append(notice('info', plural(Object.keys(state.notes).length, 'customer note') + ' loaded, but none match a customer name in this file (names are matched after customer groups).', { label: 'Customer notes', onclick: openNotes }));
+    }
     const q = state.quality;
     const pend = pendingSuggestions();
     if (pend.length) {
@@ -442,22 +466,49 @@
       box.append(el('p', { class: 'empty-row', text: 'Needs more than ' + cs.days + ' days of data; this export covers ' + plural(a.spanDays, 'day') + '. Customers who are late against their usual rhythm are listed under Overdue against their own rhythm.' }));
       return;
     }
-    $('s-stopped').textContent = 'No successful card payment in the last ' + cs.days + ' days (since ' + fmtDay(cs.since) + '). “Stopped as of” is their last card payment; presumed to pay another way now (EFT, cheque) or to have stopped trading · biggest accounts first';
+    $('s-stopped').textContent = 'No successful card payment in the last ' + cs.days + ' days (since ' + fmtDay(cs.since) + '; 3 months for monthly payers), or a note saying they pay by EFT or cheque now. “Stopped as of” is their last card payment · biggest accounts first';
+    const known = cs.stopped.filter((r) => r.declared).length;
     box.append(table([
       { key: 'name', label: 'Customer', name: true, fmt: (r) => nameCell(r.name) },
       { key: 'lastDay', label: 'Stopped as of', num: true, fmt: (r) => fmtDay(r.lastDay) },
       { key: 'gross', label: 'Card revenue', num: true, fmt: (r) => F.money(r.gross) },
-      { key: 'count', label: 'Payments', num: true },
       { key: 'since', label: 'Days since', num: true, fmt: (r) => F.int(r.since) },
+      { key: 'why', label: 'Why', fmt: (r) => el('span', { class: 'why', text: r.why || 'presumed switched' }), sort: (r) => r.why || '' },
     ], cs.stopped, { sort: { key: 'gross', dir: -1 }, empty: 'Every customer in this range has paid by card in the last ' + cs.days + ' days.', good: true }));
     if (cs.stopped.length) {
       const tot = cs.stopped.reduce((x, r) => x + r.gross, 0);
-      cap.append(plural(cs.stopped.length, 'customer') + ' (' + F.money(tot) + ' of card revenue in this range) stopped paying by card. A gap of ' + cs.days + '+ days almost always means the account moved to EFT or another payment method, occasionally that it stopped trading, so treat this as a record of when card payments ended rather than lost sales. These customers are left out of the trend chart, Needs attention and Payment cadence. ');
+      cap.append(plural(cs.stopped.length, 'customer') + ' (' + F.money(tot) + ' of card revenue in this range) stopped paying by card' + (known ? ', ' + known + ' of them confirmed by your notes' : '') +
+        '. A gap of ' + cs.days + '+ days almost always means the account moved to EFT or another payment method, occasionally that it stopped trading, so treat this as a record of when card payments ended rather than lost sales. Customers you know have stopped ordering belong in Customer notes, which moves them to Lost customers below. These customers are left out of the trend chart, Needs attention and Payment cadence. ');
+    }
+    if (cs.seasonal.length) {
+      cap.append(el('strong', { text: plural(cs.seasonal.length, 'seasonal customer') + ' off season' }), ' (no card payment for ' + cs.days + '+ days, not counted as stopped): ' + cs.seasonal.map((r) => r.name + ' (last ' + fmtDay(r.lastDay) + ')').join('; ') + '. ');
     }
     if (cs.back.length) {
       const eg = cs.back.slice(0, 4).map((r) => r.name + ' (off card ' + fmtDay(r.offFrom) + ' – ' + fmtDay(r.backOn) + ')');
       cap.append(el('strong', { text: plural(cs.back.length, 'customer') + ' came back to card after a break of ' + cs.days + '+ days' }),
         ': ' + eg.join('; ') + (cs.back.length > 4 ? '; and ' + (cs.back.length - 4) + ' more' : '') + '. The time they spent off card is skipped in their trend and Needs attention rather than counted as a slump.');
+    }
+    renderLost(a);
+  }
+
+  /** Lost customers: only ever from the notes file (status stopped ordering / closed). */
+  function renderLost(a) {
+    const cs = a.cardStop;
+    const box = clear($('tbl-lost'));
+    const cap = clear($('cap-lost'));
+    const anyNotes = Object.keys(state.notes).length > 0;
+    box.append(table([
+      { key: 'name', label: 'Customer', name: true, fmt: (r) => nameCell(r.name) },
+      { key: 'status', label: 'Status', fmt: (r) => r.status },
+      { key: 'since', label: 'Since', num: true, fmt: (r) => r.sinceText || '—', sort: (r) => r.since == null ? -Infinity : r.since },
+      { key: 'lastDay', label: 'Last card payment', num: true, fmt: (r) => fmtDay(r.lastDay) },
+      { key: 'gross', label: 'Card revenue in range', num: true, fmt: (r) => F.money(r.gross) },
+      { key: 'count', label: 'Payments', num: true },
+      { key: 'note', label: 'Note', fmt: (r) => el('span', { class: 'why', text: r.note || '' }) },
+    ], cs.lost, { sort: { key: 'gross', dir: -1 }, empty: anyNotes ? 'No customer in this range is marked stopped ordering or closed in your notes.' : 'No customer notes loaded. Use Customer notes (top right) to record who stopped ordering, who pays by EFT or cheque, and who pays monthly or seasonally.', good: anyNotes }));
+    if (cs.lost.length) {
+      const tot = cs.lost.reduce((x, r) => x + r.gross, 0);
+      cap.textContent = plural(cs.lost.length, 'customer') + ' with ' + F.money(tot) + ' of card revenue in this range. They are left out of every other customer list; their history still counts in totals and rankings.';
     }
   }
 
@@ -485,7 +536,8 @@
     $('cap-attention').textContent = mo.attention.length
       ? plural(mo.attention.length, 'customer') + (mo.attention.length === 1 ? ' is' : ' are') + ' spending ' + F.money(total) + ' less per ' + n + ' than their baseline, in total. Shortfall = baseline − recent, per ' + n + '. Sorted by shortfall; click a column header to re-sort.' +
         (w.recentN === 1 && n === 'week' ? ' With only a few weeks of data one late order is enough to appear here; check Days since before calling.' : '') +
-        ' Customers who stopped paying by card are not listed here, and ' + n + 's spent entirely off card are left out of both averages.'
+        ' Customers who stopped paying by card, lost customers and customers with no regular rhythm (sporadic, on request, mixed payment) are not listed here, and ' + n + 's spent entirely off card are left out of both averages.' +
+        (mo.monthlySkipped ? ' ' + plural(mo.monthlySkipped, 'monthly payer') + ' from your notes ' + (mo.monthlySkipped === 1 ? 'is' : 'are') + ' only compared month to month, so not on a weekly export.' : '')
       : '';
   }
 
@@ -556,12 +608,12 @@
       C.cadence(list, t, $('box-cadence'));
       const gaps = cad.map((x) => x.avgGap).sort((x, y) => x - y);
       const med = gaps.length % 2 ? gaps[(gaps.length - 1) / 2] : (gaps[gaps.length / 2 - 1] + gaps[gaps.length / 2]) / 2;
-      $('cap-cadence').textContent = 'The typical customer pays every ' + med.toFixed(1) + ' days (median). A ◆ far to the right of its bar means that customer is overdue compared with their own habit; amber ◆ = at least twice their usual gap. ' + plural(a.drifting.length, 'customer') + ' overdue in total. Only customers still paying by card are shown, and breaks of ' + a.cardStop.days + '+ days are left out of the usual gap.';
+      $('cap-cadence').textContent = 'The typical customer pays every ' + med.toFixed(1) + ' days (median). A ◆ far to the right of its bar means that customer is overdue compared with their own habit; amber ◆ = at least twice their usual gap. ' + plural(a.drifting.length, 'customer') + ' overdue in total. Only customers still paying by card with a regular rhythm are shown; breaks of ' + a.cardStop.days + '+ days are left out of the usual gap, and a cycle from your notes (weekly, monthly) replaces the measured gap.';
     }
     const dt = clear($('tbl-drifting'));
     dt.append(table([
       { key: 'name', label: 'Customer', name: true, fmt: (r) => nameCell(r.name) },
-      { key: 'avgGap', label: 'Usual gap', num: true, fmt: (r) => r.avgGap.toFixed(1) + ' days' },
+      { key: 'avgGap', label: 'Usual gap', num: true, fmt: (r) => r.avgGap.toFixed(1) + ' days' + (r.declared ? ' (' + r.declared + ')' : '') },
       { key: 'since', label: 'Days since last charge', num: true, fmt: (r) => F.int(r.since) },
       { key: 'ratio', label: '× usual gap', num: true, fmt: (r) => el('span', { class: 'neg', text: r.ratio.toFixed(1) + '×' }) },
       { key: 'gross', label: 'Revenue in period', num: true, fmt: (r) => F.money(r.gross / 100) },
@@ -919,7 +971,9 @@
         slopes: Object.fromEntries(a.momentum.slopes.map((s) => [s.name, s.slope])),
         rfmSegments: a.rfm ? Object.fromEntries(a.rfm.segments.map((s) => [s.name, s.count])) : null,
         attention: a.momentum.attention.map((x) => x.name), threshold: a.threshold,
-        stopped: a.cardStop.stopped.map((x) => ({ name: x.name, lastDay: M.isoDate(x.lastDay), gross: x.gross })),
+        stopped: a.cardStop.stopped.map((x) => ({ name: x.name, lastDay: M.isoDate(x.lastDay), gross: x.gross, declared: !!x.declared })),
+        lost: a.cardStop.lost.map((x) => ({ name: x.name, status: x.status, since: x.sinceText || '' })), seasonalOff: a.cardStop.seasonal.map((x) => x.name),
+        notes: { loaded: Object.keys(state.notes).length, applied: a.notesApplied, monthlySkipped: a.momentum.monthlySkipped },
         backOnCard: a.cardStop.back.map((x) => ({ name: x.name, offFrom: M.isoDate(x.offFrom), backOn: M.isoDate(x.backOn) })),
         late: a.drifting.map((x) => x.name), cadence: Object.fromEntries(a.cadence.map((x) => [x.name, x.avgGap])),
         attentionDetail: a.momentum.attention.map((x) => ({ name: x.name, baseAvg: x.baseAvg, recentAvg: x.recentAvg })),
@@ -1093,10 +1147,114 @@
       state.groups = {};
       commitGroups('All groups removed.');
     });
-    C.setNameNote((name) => { const m = state.members.get(name); return m ? 'Combines: ' + m.map(G.display).join(' + ') : null; });
+    C.setNameNote((name) => {
+      const m = state.members.get(name), n = noteOf(name);
+      const bits = [];
+      if (m) bits.push('Combines: ' + m.map(G.display).join(' + '));
+      if (n) bits.push('Note: ' + N.describe(n));
+      return bits.length ? bits.join(' · ') : null;
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Customer notes dialog
+  // ---------------------------------------------------------------------------
+  function commitNotes(msg) {
+    saveStore();
+    if (state.rows) render();
+    renderNotesDialog();
+    if (msg) $('noteNote').textContent = msg;
+  }
+  const noteTag = (text) => (text ? el('span', { class: 'tag', text }) : el('span', { class: 'mut', text: '—' }));
+
+  function renderNotesDialog() {
+    const add = clear($('noteAdd')), list = clear($('noteList'));
+    const customers = state.rows ? [...new Set((state.mapped || state.rows).filter((r) => !r.oneTime).map((r) => r.customer))].sort((a, b) => a.localeCompare(b)) : [];
+    // Add / edit one note
+    add.append(el('h3', { text: 'Add or change a note' }));
+    const dl = el('datalist', { id: 'noteNames' }, customers.map((c) => el('option', { value: c })));
+    const nameIn = el('input', { type: 'text', list: 'noteNames', placeholder: 'Customer name (as shown in the dashboard)', 'aria-label': 'Customer' });
+    const sel = (opts, label) => el('select', { 'aria-label': label }, opts.map(([v, t]) => el('option', { value: v, text: t })));
+    const paysIn = sel([['', 'card'], ['EFT', 'EFT'], ['cheque', 'cheque'], ['mixed', 'mixed']], 'Pays by');
+    const cycleIn = sel([['', 'measured'], ['weekly', 'weekly'], ['monthly', 'monthly'], ['seasonal', 'seasonal'], ['sporadic', 'sporadic'], ['on request', 'on request']], 'Cycle');
+    const statusIn = sel([['', 'active'], ['stopped ordering', 'stopped ordering'], ['closed', 'closed']], 'Status');
+    const sinceIn = el('input', { type: 'text', placeholder: 'YYYY-MM', 'aria-label': 'Since', pattern: '\\d{4}(-\\d{1,2}(-\\d{1,2})?)?' });
+    const textIn = el('input', { type: 'text', placeholder: 'Note (optional)', 'aria-label': 'Note' });
+    const fill = (n) => { nameIn.value = n.name; paysIn.value = n.paysBy || ''; cycleIn.value = n.cycle || ''; statusIn.value = n.status || ''; sinceIn.value = n.sinceText || ''; textIn.value = n.note || ''; };
+    nameIn.addEventListener('change', () => { const n = noteOf(nameIn.value); if (n) fill(n); });
+    const saveBtn = el('button', { type: 'button', class: 'btn primary small', onclick: () => {
+      const name = nameIn.value.trim().replace(/\s+/g, ' ');
+      if (!name) { $('noteNote').textContent = 'Type or pick the customer name first.'; return; }
+      const since = N.parseSince(sinceIn.value);
+      if (since === undefined) { $('noteNote').textContent = 'Since should be YYYY-MM-DD or YYYY-MM.'; return; }
+      const note = { name, paysBy: paysIn.value || null, cycle: cycleIn.value || null, status: statusIn.value || null, since, sinceText: sinceIn.value.trim(), note: textIn.value.trim() };
+      if (!note.paysBy && !note.cycle && !note.status && !note.note && since == null) { delete state.notes[N.norm(name)]; commitNotes('Removed the note for “' + name + '”.'); return; }
+      state.notes[N.norm(name)] = note;
+      commitNotes('Saved the note for “' + name + '”' + (customers.length && !customers.some((c) => N.norm(c) === N.norm(name)) ? ' (no customer with that name in this file; check the spelling)' : '') + '.');
+      fill({ name: '' });
+    } }, 'Save note');
+    add.append(dl, el('div', { class: 'note-form' },
+      el('label', null, 'Customer', nameIn), el('label', null, 'Pays by', paysIn), el('label', null, 'Cycle', cycleIn),
+      el('label', null, 'Status', statusIn), el('label', null, 'Since', sinceIn), el('label', null, 'Note', textIn), saveBtn));
+
+    // Current notes
+    const notes = Object.values(state.notes).sort((a, b) => a.name.localeCompare(b.name));
+    list.append(el('h3', { text: 'Your notes (' + notes.length + ')' }));
+    if (!notes.length) list.append(el('p', { class: 'grp-empty', text: 'No notes yet. Add one above or load a notes file (a CSV with the columns Customer, Pays by, Cycle, Status, Since, Note).' }));
+    else {
+      list.append(el('div', { class: 'note-row head' }, ['Customer', 'Pays by', 'Cycle', 'Status', 'Since', 'Note', ''].map((t) => el('span', { text: t }))));
+      const inFile = new Set(customers.map(N.norm));
+      notes.forEach((n) => {
+        list.append(el('div', { class: 'note-row' },
+          el('span', { class: 'nm' }, n.name, state.rows && !inFile.has(N.norm(n.name)) ? el('span', { class: 'mut', text: ' · not in this file' }) : null),
+          noteTag(n.paysBy), noteTag(n.cycle), noteTag(n.status), el('span', { class: 'mut', text: n.sinceText || '—' }), el('span', { class: 'mut', text: n.note || '' }),
+          el('button', { type: 'button', class: 'x', title: 'Remove the note for ' + n.name, 'aria-label': 'Remove note for ' + n.name, text: '×', onclick: () => { delete state.notes[N.norm(n.name)]; commitNotes('Removed the note for “' + n.name + '”.'); } })));
+      });
+    }
+    $('noteNote').textContent = state.storeOk ? 'Saved in this browser only. Use “Save notes file” to keep a copy, edit it in a spreadsheet, or use it on another computer.'
+      : 'This browser is not allowing pages opened from disk to save settings, so notes last until the tab closes. Use “Save notes file” to keep them.';
+    $('noteClear').disabled = !notes.length;
+    updateNotesBadge();
+  }
+  function updateNotesBadge() {
+    const b = $('notesBadge');
+    const n = Object.keys(state.notes).length;
+    b.hidden = !n;
+    b.className = 'badge';
+    b.textContent = String(n);
+    b.title = plural(n, 'customer note');
+  }
+  function openNotes() { renderNotesDialog(); $('notesDialog').showModal(); }
+  function bindNotes() {
+    $('notesBtn').addEventListener('click', openNotes);
+    $('notesClose').addEventListener('click', () => $('notesDialog').close());
+    $('noteSave').addEventListener('click', () => {
+      const blob = new Blob([N.toCSV(state.notes)], { type: 'text/csv' });
+      const a = el('a', { href: URL.createObjectURL(blob), download: 'customer-notes.csv' });
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      $('noteNote').textContent = 'Saved customer-notes.csv. It contains customer names, so keep it with the groups file, not in shared folders.';
+    });
+    $('noteLoadInput').addEventListener('change', async (e) => {
+      const f = e.target.files[0];
+      e.target.value = '';
+      if (!f) return;
+      try {
+        const { byKey, count } = N.fromCSV(await f.text(), P.parseCSV);
+        Object.assign(state.notes, byKey);
+        commitNotes('Loaded ' + plural(count, 'note') + ' from ' + f.name + '.');
+      } catch (err) { $('noteNote').textContent = err.message; }
+    });
+    $('noteClear').addEventListener('click', () => {
+      if (!window.confirm('Remove all customer notes saved in this browser?')) return;
+      state.notes = {};
+      commitNotes('All notes removed.');
+    });
+    updateNotesBadge();
   }
 
   loadStore();
   bindGroups();
+  bindNotes();
   bind();
 })();

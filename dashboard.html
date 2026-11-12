@@ -323,8 +323,21 @@ table.data tbody tr:hover { background: var(--surface-2); }
 .grp-pick label { display: grid; grid-template-columns: 22px minmax(200px, 1.4fr) 110px minmax(140px, 1fr) minmax(140px, 1fr); gap: 8px; align-items: center; padding: 5px 10px; font-size: 12.5px; border-bottom: 1px solid var(--border); cursor: pointer; }
 .grp-pick label:hover { background: var(--surface-2); }
 .grp-pick .num { text-align: right; }
+.note-form { display: grid; grid-template-columns: minmax(180px, 1.3fr) 96px 118px 150px 96px minmax(120px, 1fr) auto; gap: 8px; align-items: end; }
+.note-form label { display: grid; gap: 3px; font-size: 11.5px; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em; }
+.note-form input, .note-form select { border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); border-radius: 7px; padding: 6px 8px; font-size: 13px; font-family: inherit; }
+.note-row { display: grid; grid-template-columns: minmax(200px, 1.5fr) 90px 100px 130px 90px minmax(160px, 1.6fr) 28px; gap: 10px; align-items: center; font-size: 12.5px; padding: 5px 6px; border-radius: 6px; }
+.note-row:hover { background: var(--surface-2); }
+.note-row.head { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.note-row .nm { font-weight: 600; }
+.note-row .mut { color: var(--text-2); }
+.note-row .x { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 15px; padding: 0; }
+.note-row .x:hover { color: var(--bad-text); }
+.note-row .tag { display: inline-block; padding: 1px 7px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); font-size: 11.5px; }
+.why { color: var(--text-2); font-size: 12px; }
 .grp-pick .mut { color: var(--text-2); }
 .tag.grp { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-ink); cursor: help; }
+.tag.note { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--text); cursor: help; }
 
 /* --- Data quality --------------------------------------------------------------------------- */
 .dq { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 0 16px; }
@@ -510,6 +523,7 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
       </div>
       <div class="filters-spacer"></div>
       <button type="button" class="btn" id="groupsBtn" aria-haspopup="dialog">Customer groups<span class="badge" id="groupsBadge" hidden></span></button>
+      <button type="button" class="btn" id="notesBtn" aria-haspopup="dialog">Customer notes<span class="badge" id="notesBadge" hidden></span></button>
       <button type="button" class="btn" id="printBtn">Print / PDF</button>
     </div>
     <p class="print-summary" id="printSummary"></p>
@@ -580,6 +594,13 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
             <p class="caption" id="cap-stopped"></p>
           </article>
         </div>
+        <article class="card span-2" id="card-lost">
+          <header class="card-head">
+            <div><h3>Lost customers</h3><p class="card-sub" id="s-lost">Customers your notes file marks as stopped ordering or closed. The export can’t tell these from customers who moved to EFT, so this list only comes from the notes.</p></div>
+          </header>
+          <div class="table-wrap scroll mid" id="tbl-lost"></div>
+          <p class="caption" id="cap-lost"></p>
+        </article>
       </div>
     </section>
 
@@ -734,6 +755,28 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
     <input type="file" id="grpLoadInput" class="visually-hidden" accept=".csv,text/csv">
     <button type="button" class="btn danger" id="grpClear">Remove all groups</button>
     <span class="dialog-note" id="grpNote" role="status"></span>
+  </div>
+</dialog>
+
+<!-- Customer notes: what the export can't show (payment method, cycle, lost) -->
+<dialog class="dialog" id="notesDialog" aria-labelledby="notesTitle">
+  <div class="dialog-head">
+    <div>
+      <h2 id="notesTitle">Customer notes</h2>
+      <p class="card-sub">The export only shows card payments. It can’t tell a customer who stopped ordering from one who pays by EFT now, or a monthly payer from a weekly one who is late. Record what you know here and every list applies it: <strong>Pays by</strong> EFT or cheque marks them as stopped paying by card (with the reason); <strong>Cycle</strong> monthly compares them month to month, seasonal never flags them, sporadic or on request means no rhythm to be late against; <strong>Status</strong> stopped ordering or closed moves them to Lost customers. Notes are kept in this browser; save the file to keep a copy or edit it in a spreadsheet.</p>
+    </div>
+    <button type="button" class="btn primary" id="notesClose">Done</button>
+  </div>
+  <div class="dialog-body">
+    <section class="grp-section" id="noteAdd"></section>
+    <section class="grp-section" id="noteList"></section>
+  </div>
+  <div class="dialog-foot">
+    <button type="button" class="btn" id="noteSave">Save notes file…</button>
+    <label class="btn" for="noteLoadInput" tabindex="0">Load notes file…</label>
+    <input type="file" id="noteLoadInput" class="visually-hidden" accept=".csv,text/csv">
+    <button type="button" class="btn danger" id="noteClear">Remove all notes</button>
+    <span class="dialog-note" id="noteNote" role="status"></span>
   </div>
 </dialog>
 
@@ -1064,6 +1107,11 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
   // "stopped paying by card as of <last card payment>", never as lost revenue,
   // and a 60+ day break between two card payments is "off card" for that time.
   const CARD_STOP_DAYS = 60;
+  // Declared payment cycles (customer notes), in days. A monthly payer is only
+  // "stopped" after three missed cycles, since one 60-day gap is a single
+  // missed payment for them.
+  const CYCLE_DAYS = { weekly: 7, monthly: 365.25 / 12 };
+  const normName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
   // ---------------------------------------------------------------------------
   // Calendar helpers
@@ -1299,6 +1347,9 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
     const tf = timeframeOf(spanDays);
     const threshold = opt.threshold != null ? opt.threshold : 0.25;
     const successOnly = opt.status === 'success';
+    // Customer notes: what the export can't show (payment method, cycle, lost),
+    // keyed by normalised customer name. See notes.js.
+    const notes = opt.notes || {};
 
     const inRange = allRows.filter((r) => r.day >= from && r.day <= to);
     const scope = successOnly ? inRange.filter((r) => r.status === 'Batched') : inRange;
@@ -1467,24 +1518,51 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
     // A gap of CARD_STOP_DAYS+ between two card payments is a spell off card
     // (paid another way, then came back); the same silence up to the end of the
     // range means the customer has stopped paying by card as of their last one.
+    // Customer notes override what the data alone would say:
+    //   status stopped ordering / closed → lost (a different list entirely);
+    //   pays by EFT / cheque → stopped paying by card now, with the reason;
+    //   cycle monthly → stopped only after three cycles (~91 days);
+    //   cycle seasonal → never stopped, "off season" instead.
+    const byGrossThenName = (a, b) => b.gross - a.gross || (a.name < b.name ? -1 : 1);
+    let notesApplied = 0;
     for (const c of named) {
+      c.note = notes[normName(c.name)] || null;
+      if (c.note) notesApplied++;
       c.breaks = [];
       for (let i = 1; i < c.days.length; i++) {
         const g = c.days[i] - c.days[i - 1];
         if (g >= CARD_STOP_DAYS) c.breaks.push({ from: c.days[i - 1], to: c.days[i], days: g });
       }
-      c.stopped = to - c.lastDay >= CARD_STOP_DAYS;
+      const n = c.note || {};
+      c.lost = !!n.status;
+      c.declaredGap = n.cycle && CYCLE_DAYS[n.cycle] ? CYCLE_DAYS[n.cycle] : null;
+      c.stopDays = n.cycle === 'monthly' ? Math.max(CARD_STOP_DAYS, Math.round(3 * CYCLE_DAYS.monthly)) : CARD_STOP_DAYS;
+      c.offCardMethod = n.paysBy === 'EFT' || n.paysBy === 'cheque';
+      c.seasonal = n.cycle === 'seasonal';
+      c.noRhythm = n.cycle === 'sporadic' || n.cycle === 'on request' || n.paysBy === 'mixed';
+      c.stopped = !c.lost && !c.seasonal && (c.offCardMethod || to - c.lastDay >= c.stopDays);
+      c.why = c.offCardMethod ? 'pays by ' + n.paysBy + (n.sinceText ? ' since ' + n.sinceText : '') + (n.note ? ' · ' + n.note : '')
+        : n.paysBy === 'mixed' ? 'mixed card / other payments' + (n.note ? ' · ' + n.note : '')
+        : n.cycle ? n.cycle + (n.note ? ' · ' + n.note : '') : n.note || null;
     }
     // A tracking period counts as off card when it lies wholly inside a break.
     const offCard = (c, p) => c.breaks.some((b) => b.from < p.start && p.end < b.to);
     const cardStop = {
-      days: CARD_STOP_DAYS, known: spanDays > CARD_STOP_DAYS, since: to - CARD_STOP_DAYS + 1,
+      days: CARD_STOP_DAYS, known: spanDays > CARD_STOP_DAYS, since: to - CARD_STOP_DAYS + 1, notesApplied,
       stopped: named.filter((c) => c.stopped)
-        .map((c) => ({ name: c.name, gross: c.gross / 100, count: c.count, firstDay: c.firstDay, lastDay: c.lastDay, since: to - c.lastDay }))
-        .sort((a, b) => b.gross - a.gross || (a.name < b.name ? -1 : 1)),
-      back: named.filter((c) => !c.stopped && c.breaks.length)
+        .map((c) => ({ name: c.name, gross: c.gross / 100, count: c.count, firstDay: c.firstDay, lastDay: c.lastDay, since: to - c.lastDay, why: c.why, declared: c.offCardMethod, stopDays: c.stopDays }))
+        .sort(byGrossThenName),
+      back: named.filter((c) => !c.stopped && !c.lost && c.breaks.length)
         .map((c) => { const b = c.breaks[c.breaks.length - 1]; return { name: c.name, gross: c.gross / 100, offFrom: b.from, backOn: b.to, days: b.days, breaks: c.breaks.length }; })
-        .sort((a, b) => b.gross - a.gross || (a.name < b.name ? -1 : 1)),
+        .sort(byGrossThenName),
+      // Lost customers: the business says they stopped ordering or closed.
+      lost: named.filter((c) => c.lost)
+        .map((c) => ({ name: c.name, status: c.note.status, since: c.note.since, sinceText: c.note.sinceText, gross: c.gross / 100, count: c.count, lastDay: c.lastDay, daysSince: to - c.lastDay, note: c.note.note }))
+        .sort(byGrossThenName),
+      // Seasonal customers who are silent: off season, not stopped.
+      seasonal: named.filter((c) => c.seasonal && to - c.lastDay >= CARD_STOP_DAYS)
+        .map((c) => ({ name: c.name, gross: c.gross / 100, lastDay: c.lastDay, since: to - c.lastDay }))
+        .sort(byGrossThenName),
     };
 
     const top15 = buyers.slice().sort(byGross).slice(0, 15);
@@ -1512,13 +1590,16 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
 
     // Payment cadence: mean gap between distinct successful-charge days, for
     // customers still paying by card. Breaks of CARD_STOP_DAYS+ are time spent
-    // paying another way, not part of the rhythm, so they are left out.
-    const cadence = named.filter((c) => !c.stopped).map((c) => {
+    // paying another way, not part of the rhythm, so they are left out. A
+    // declared cycle (weekly, monthly) replaces the measured gap; customers
+    // with no rhythm (sporadic, on request, mixed, seasonal) or who are lost
+    // have no cadence to be late against.
+    const cadence = named.filter((c) => !c.stopped && !c.lost && !c.seasonal && !c.noRhythm).map((c) => {
       const gaps = c.days.slice(1).map((d, i) => d - c.days[i]).filter((g) => g < CARD_STOP_DAYS);
-      if (gaps.length < 2) return null;
-      const avg = mean(gaps);
+      if (!c.declaredGap && gaps.length < 2) return null;
+      const avg = c.declaredGap || mean(gaps);
       const since = to - c.lastDay;
-      return { name: c.name, avgGap: avg, since, ratio: avg ? since / avg : null, gross: c.gross, chargeDays: c.days.length };
+      return { name: c.name, avgGap: avg, since, ratio: avg ? since / avg : null, gross: c.gross, chargeDays: c.days.length, declared: c.declaredGap ? c.note.cycle : null };
     }).filter(Boolean).sort((a, b) => a.avgGap - b.avgGap || (a.name < b.name ? -1 : 1));
     const drifting = cadence.filter((c) => c.since >= 7 && c.ratio >= 2).sort((a, b) => b.gross - a.gross);
 
@@ -1534,7 +1615,10 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
     }
     // Customers who stopped paying by card are not trending down or slipping:
     // they pay another way now, and are listed under "Stopped paying by card".
-    const tracked = named.filter((c) => !c.stopped);
+    // Lost, seasonal and no-rhythm customers have nothing to compare against
+    // either, and monthly payers are only compared when periods are months.
+    const tracked = named.filter((c) => !c.stopped && !c.lost && !c.seasonal && !c.noRhythm && !(c.note && c.note.cycle === 'monthly' && tf.period === 'week'));
+    momentum.monthlySkipped = tf.period === 'week' ? named.filter((c) => c.note && c.note.cycle === 'monthly' && !c.stopped && !c.lost).length : 0;
     // Trend: linear slope per period (the last 12 months for multi-year exports),
     // skipping periods the customer spent wholly off card.
     const t0 = tf.trendMax ? Math.max(0, P - tf.trendMax) : 0;
@@ -1692,7 +1776,7 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
       runRate: { perWeek: (gross / spanDays) * 7, perMonth: (gross / spanDays) * (365.25 / 12) },
       series: { gross: s.gross, net, refunds: s.refunds, count: s.count, rolling, pop, hi, lo },
       totals, deltas, retry: Object.assign({}, retry, { looseRecovered }),
-      top15, pareto, concentration, perActive, cadence, drifting, momentum, cardStop, rfm, acq,
+      top15, pareto, concentration, perActive, cadence, drifting, momentum, cardStop, rfm, acq, notesApplied,
       risk: { MIN_TX, failureByCustomer, eligibleForFailure, cardMix, reasons: Object.values(reasons).sort((a, b) => b.count - a.count), voidCustomers },
       duplicates, rowsInScope: scope.length, rowsInRange: inRange.length,
       oneTime: oneTimeCust ? { gross: oneTimeCust.gross, count: oneTimeCust.count } : null,
@@ -1702,7 +1786,7 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
   const api = {
     analyse, retryChains, buildBuckets, bucketStart, nextStart, autoUnit, slope, quartileScores, segmentOf,
     TIMEFRAMES, timeframeOf, trackingPeriods, periodIndex, dayRange,
-    ymd, dayOf, isoDate, longDate, UNITS, UNIT_LABEL, UNIT_NOUN, ROLLING, SEGMENTS, MONTHS, ONE_TIME, DAY_MS, CARD_STOP_DAYS,
+    ymd, dayOf, isoDate, longDate, UNITS, UNIT_LABEL, UNIT_NOUN, ROLLING, SEGMENTS, MONTHS, ONE_TIME, DAY_MS, CARD_STOP_DAYS, CYCLE_DAYS, normName,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.CCMetrics = api;
@@ -1924,6 +2008,120 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
   const api = { norm, cardTagBase, cardLast4, profiles, suggestGroups, applyGroups, toCSV, fromCSV, manualKey, isManual, nameOf, display, keyOf };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.CCGroups = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
+/* notes.js — what the card export cannot show, one row per customer.
+ *
+ * The export only lists card payments. It cannot tell a customer who stopped
+ * ordering from one who now pays by EFT, or a monthly payer from a weekly one
+ * who is late. The people who run the accounts can, so they keep a small
+ * customer-notes file (edited in a spreadsheet, loaded in the dashboard) and
+ * the dashboard applies it to every list:
+ *
+ *   Pays by   card (default) | EFT | cheque | mixed
+ *             EFT / cheque: "stopped paying by card" at once, with the reason;
+ *             mixed: card share varies, so never flagged for a drop or lateness.
+ *   Cycle     weekly | monthly | seasonal | sporadic | on request
+ *             (blank = measured from their card payments)
+ *             monthly: compared month to month; stopped only after 3 cycles;
+ *             seasonal: never stopped / overdue / slipping, shown as off season;
+ *             sporadic, on request: no rhythm to compare against, so never
+ *             overdue or slipping; still "stopped" after 60 days.
+ *   Status    active (default) | stopped ordering | closed
+ *             either one moves the customer to "Lost customers" as of Since.
+ *   Since     YYYY-MM-DD or YYYY-MM, optional: the switch, stop or closure date.
+ *   Note      free text, shown next to the name.
+ *
+ * Pure functions, no DOM. window.CCNotes in the browser, require() in Node.
+ */
+(function (root) {
+  'use strict';
+
+  const DAY_MS = 86400000;
+  const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+  const PAYS_BY = { card: 'card', eft: 'EFT', etransfer: 'EFT', 'e transfer': 'EFT', 'bank transfer': 'EFT', cheque: 'cheque', check: 'cheque', mixed: 'mixed', 'card and eft': 'mixed' };
+  const CYCLE = { weekly: 'weekly', week: 'weekly', monthly: 'monthly', month: 'monthly', 'month to month': 'monthly', '30 day terms': 'monthly', seasonal: 'seasonal', sporadic: 'sporadic', occasional: 'sporadic', irregular: 'sporadic', rare: 'sporadic', 'on request': 'on request', 'by request': 'on request', 'prior warning': 'on request' };
+  const STATUS = { active: 'active', 'stopped ordering': 'stopped ordering', stopped: 'stopped ordering', closed: 'closed', 'shut down': 'closed', lost: 'stopped ordering' };
+  const CYCLE_DAYS = { weekly: 7, monthly: 365.25 / 12 };
+  const COLUMNS = ['Customer', 'Pays by', 'Cycle', 'Status', 'Since', 'Note'];
+
+  /** "2026-06" → first of that month, "2026-06-15" → that day, as days since epoch. */
+  function parseSince(v) {
+    const s = String(v || '').trim();
+    if (!s) return null;
+    const m = /^(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?$/.exec(s);
+    if (!m) return undefined;
+    const y = +m[1], mo = m[2] ? +m[2] - 1 : 0, d = m[3] ? +m[3] : 1;
+    const t = Date.UTC(y, mo, d);
+    const dt = new Date(t);
+    if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo || dt.getUTCDate() !== d) return undefined;
+    return Math.round(t / DAY_MS);
+  }
+
+  /** Parse a notes file. Returns { byKey: {normName: note}, count }. Throws with a
+   *  message naming each bad value and its line, so a typo is fixed, not guessed. */
+  function fromCSV(text, parseCSV) {
+    const { rows } = parseCSV(String(text));
+    if (!rows.length) throw new Error('The notes file is empty.');
+    const h = rows[0].map(norm);
+    const col = (names) => h.findIndex((x) => names.includes(x));
+    const ci = col(['customer', 'customer number', 'customer name', 'name']);
+    if (ci < 0) throw new Error('The notes file needs a "Customer" column. Columns found: ' + rows[0].join(', '));
+    const pi = col(['pays by', 'payment method', 'pays']), yi = col(['cycle', 'rhythm', 'terms']), si = col(['status']), di = col(['since']), ni = col(['note', 'notes', 'comment']);
+    const byKey = {};
+    const problems = [];
+    rows.slice(1).forEach((r, i) => {
+      const line = i + 2;
+      const name = String(r[ci] || '').trim().replace(/\s+/g, ' ');
+      if (!name) return;
+      const get = (k) => (k >= 0 ? String(r[k] || '').trim() : '');
+      const pick = (table, raw, what) => {
+        if (!raw) return null;
+        const v = table[norm(raw)];
+        if (!v) problems.push('line ' + line + ': ' + what + ' "' + raw + '" is not one of ' + [...new Set(Object.values(table))].join(', '));
+        return v || null;
+      };
+      const note = {
+        name, paysBy: pick(PAYS_BY, get(pi), 'Pays by'), cycle: pick(CYCLE, get(yi), 'Cycle'), status: pick(STATUS, get(si), 'Status'),
+        since: null, sinceText: get(di), note: get(ni),
+      };
+      const since = parseSince(get(di));
+      if (since === undefined) problems.push('line ' + line + ': Since "' + get(di) + '" should be YYYY-MM-DD or YYYY-MM');
+      else note.since = since;
+      if (note.paysBy === 'card') note.paysBy = null;
+      if (note.status === 'active') note.status = null;
+      if (!note.paysBy && !note.cycle && !note.status && !note.note && note.since == null) return; // nothing said
+      byKey[norm(name)] = note;
+    });
+    if (problems.length) throw new Error('The notes file has ' + problems.length + ' problem' + (problems.length === 1 ? '' : 's') + ': ' + problems.slice(0, 5).join('; ') + (problems.length > 5 ? '; …' : ''));
+    return { byKey, count: Object.keys(byKey).length };
+  }
+
+  function toCSV(byKey) {
+    const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+    const lines = [COLUMNS.map(q).join(',')];
+    Object.values(byKey).sort((a, b) => a.name.localeCompare(b.name))
+      .forEach((n) => lines.push([n.name, n.paysBy || '', n.cycle || '', n.status || '', n.sinceText || '', n.note || ''].map(q).join(',')));
+    return lines.join('\r\n') + '\r\n';
+  }
+
+  /** One line describing a note, for tooltips and tables. */
+  function describe(n) {
+    if (!n) return '';
+    const bits = [];
+    if (n.status) bits.push(n.status + (n.sinceText ? ' since ' + n.sinceText : ''));
+    if (n.paysBy) bits.push('pays by ' + n.paysBy + (!n.status && n.sinceText ? ' since ' + n.sinceText : ''));
+    if (n.cycle) bits.push(n.cycle);
+    if (n.note) bits.push(n.note);
+    return bits.join(' · ');
+  }
+
+  const api = { norm, fromCSV, toCSV, parseSince, describe, COLUMNS, CYCLE_DAYS, PAYS_BY, CYCLE, STATUS };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.CCNotes = api;
 })(typeof window !== 'undefined' ? window : globalThis);
 
 </script>
@@ -2573,7 +2771,7 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
 (function () {
   'use strict';
 
-  const P = window.CCParse, M = window.CCMetrics, C = window.CCCharts, F = window.CCFormat, G = window.CCGroups;
+  const P = window.CCParse, M = window.CCMetrics, C = window.CCCharts, F = window.CCFormat, G = window.CCGroups, N = window.CCNotes;
   const $ = (id) => document.getElementById(id);
 
   const state = {
@@ -2583,22 +2781,31 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
     // Customer groups: { "label in export": "customer it belongs to" }, kept in this browser.
     groups: {}, dismissed: [], storeOk: true,
     mapped: null, profiles: new Map(), suggestions: [], members: new Map(),
+    // Customer notes: { normalised name: {name, paysBy, cycle, status, since, sinceText, note} }, kept in this browser.
+    notes: {},
   };
 
   // ---------------------------------------------------------------------------
   // Customer groups: persistence (this browser only) and application
   // ---------------------------------------------------------------------------
   const STORE_KEY = 'ccdash.customerGroups.v1';
+  const NOTES_KEY = 'ccdash.customerNotes.v1';
   function loadStore() {
     try {
       const v = JSON.parse(window.localStorage.getItem(STORE_KEY) || 'null');
       if (v && v.groups && typeof v.groups === 'object') { state.groups = v.groups; state.dismissed = Array.isArray(v.dismissed) ? v.dismissed : []; }
+      const n = JSON.parse(window.localStorage.getItem(NOTES_KEY) || 'null');
+      if (n && typeof n === 'object') state.notes = n;
     } catch (e) { state.storeOk = false; }
   }
   function saveStore() {
-    try { window.localStorage.setItem(STORE_KEY, JSON.stringify({ groups: state.groups, dismissed: state.dismissed })); state.storeOk = true; }
-    catch (e) { state.storeOk = false; }
+    try {
+      window.localStorage.setItem(STORE_KEY, JSON.stringify({ groups: state.groups, dismissed: state.dismissed }));
+      window.localStorage.setItem(NOTES_KEY, JSON.stringify(state.notes));
+      state.storeOk = true;
+    } catch (e) { state.storeOk = false; }
   }
+  const noteOf = (name) => state.notes[N.norm(name)] || null;
   const resolve = (label) => state.groups[label] || label;
   const sugKey = (s) => s.members.slice().sort().join('\u0000');
 
@@ -2640,9 +2847,11 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
   const clear = (node) => { while (node.firstChild) node.removeChild(node.firstChild); return node; };
   const nameCell = (name, oneTime) => {
     const mem = state.members.get(name);
+    const note = oneTime ? null : noteOf(name);
     return [name,
       oneTime ? el('span', { class: 'tag agg', title: 'Not a customer: an aggregate of unrelated cards keyed in once', text: 'aggregate †' }) : null,
-      mem ? el('span', { class: 'tag grp', title: 'One customer, shown under these names in the export: ' + mem.map(G.display).join(' + '), text: mem.length > 1 ? mem.length + ' names' : 'grouped' }) : null];
+      mem ? el('span', { class: 'tag grp', title: 'One customer, shown under these names in the export: ' + mem.map(G.display).join(' + '), text: mem.length > 1 ? mem.length + ' names' : 'grouped' }) : null,
+      note ? el('span', { class: 'tag note', title: 'Customer note: ' + N.describe(note), text: note.status ? note.status : note.paysBy ? note.paysBy : note.cycle ? note.cycle : 'note' }) : null];
   };
 
   /** Sortable table. columns: {key,label,num,fmt(row)→string|Node[],sort(row)→value} */
@@ -2751,7 +2960,7 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
   // Render pipeline
   // ---------------------------------------------------------------------------
   function analyse() {
-    state.analysis = M.analyse(state.mapped || state.rows, { from: state.from, to: state.to, unit: state.unit, status: state.status, threshold: state.threshold });
+    state.analysis = M.analyse(state.mapped || state.rows, { from: state.from, to: state.to, unit: state.unit, status: state.status, threshold: state.threshold, notes: state.notes });
     return state.analysis;
   }
 
@@ -2835,6 +3044,19 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
   function renderNotices(a) {
     const box = clear($('notices'));
     box.append(notice('info', timeframeText(a)));
+    if (a.notesApplied) {
+      const cs = a.cardStop;
+      const bits = [];
+      if (cs.lost.length) bits.push(plural(cs.lost.length, 'lost customer'));
+      const eft = cs.stopped.filter((r) => r.declared).length; if (eft) bits.push(eft + ' on EFT or cheque');
+      const mon = Object.values(state.notes).filter((x) => x.cycle === 'monthly').length; if (mon) bits.push(mon + ' monthly');
+      const sea = Object.values(state.notes).filter((x) => x.cycle === 'seasonal').length; if (sea) bits.push(sea + ' seasonal');
+      const spo = Object.values(state.notes).filter((x) => x.cycle === 'sporadic' || x.cycle === 'on request' || x.paysBy === 'mixed').length; if (spo) bits.push(spo + ' with no regular rhythm');
+      box.append(notice('info', 'Customer notes apply to ' + plural(a.notesApplied, 'customer') + ' in this file' + (bits.length ? ' (' + bits.join(', ') + ')' : '') + '. Lists that need a rhythm or a baseline leave out customers the notes say have none.',
+        { label: 'Customer notes', onclick: openNotes }));
+    } else if (Object.keys(state.notes).length) {
+      box.append(notice('info', plural(Object.keys(state.notes).length, 'customer note') + ' loaded, but none match a customer name in this file (names are matched after customer groups).', { label: 'Customer notes', onclick: openNotes }));
+    }
     const q = state.quality;
     const pend = pendingSuggestions();
     if (pend.length) {
@@ -3012,22 +3234,49 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
       box.append(el('p', { class: 'empty-row', text: 'Needs more than ' + cs.days + ' days of data; this export covers ' + plural(a.spanDays, 'day') + '. Customers who are late against their usual rhythm are listed under Overdue against their own rhythm.' }));
       return;
     }
-    $('s-stopped').textContent = 'No successful card payment in the last ' + cs.days + ' days (since ' + fmtDay(cs.since) + '). “Stopped as of” is their last card payment; presumed to pay another way now (EFT, cheque) or to have stopped trading · biggest accounts first';
+    $('s-stopped').textContent = 'No successful card payment in the last ' + cs.days + ' days (since ' + fmtDay(cs.since) + '; 3 months for monthly payers), or a note saying they pay by EFT or cheque now. “Stopped as of” is their last card payment · biggest accounts first';
+    const known = cs.stopped.filter((r) => r.declared).length;
     box.append(table([
       { key: 'name', label: 'Customer', name: true, fmt: (r) => nameCell(r.name) },
       { key: 'lastDay', label: 'Stopped as of', num: true, fmt: (r) => fmtDay(r.lastDay) },
       { key: 'gross', label: 'Card revenue', num: true, fmt: (r) => F.money(r.gross) },
-      { key: 'count', label: 'Payments', num: true },
       { key: 'since', label: 'Days since', num: true, fmt: (r) => F.int(r.since) },
+      { key: 'why', label: 'Why', fmt: (r) => el('span', { class: 'why', text: r.why || 'presumed switched' }), sort: (r) => r.why || '' },
     ], cs.stopped, { sort: { key: 'gross', dir: -1 }, empty: 'Every customer in this range has paid by card in the last ' + cs.days + ' days.', good: true }));
     if (cs.stopped.length) {
       const tot = cs.stopped.reduce((x, r) => x + r.gross, 0);
-      cap.append(plural(cs.stopped.length, 'customer') + ' (' + F.money(tot) + ' of card revenue in this range) stopped paying by card. A gap of ' + cs.days + '+ days almost always means the account moved to EFT or another payment method, occasionally that it stopped trading, so treat this as a record of when card payments ended rather than lost sales. These customers are left out of the trend chart, Needs attention and Payment cadence. ');
+      cap.append(plural(cs.stopped.length, 'customer') + ' (' + F.money(tot) + ' of card revenue in this range) stopped paying by card' + (known ? ', ' + known + ' of them confirmed by your notes' : '') +
+        '. A gap of ' + cs.days + '+ days almost always means the account moved to EFT or another payment method, occasionally that it stopped trading, so treat this as a record of when card payments ended rather than lost sales. Customers you know have stopped ordering belong in Customer notes, which moves them to Lost customers below. These customers are left out of the trend chart, Needs attention and Payment cadence. ');
+    }
+    if (cs.seasonal.length) {
+      cap.append(el('strong', { text: plural(cs.seasonal.length, 'seasonal customer') + ' off season' }), ' (no card payment for ' + cs.days + '+ days, not counted as stopped): ' + cs.seasonal.map((r) => r.name + ' (last ' + fmtDay(r.lastDay) + ')').join('; ') + '. ');
     }
     if (cs.back.length) {
       const eg = cs.back.slice(0, 4).map((r) => r.name + ' (off card ' + fmtDay(r.offFrom) + ' – ' + fmtDay(r.backOn) + ')');
       cap.append(el('strong', { text: plural(cs.back.length, 'customer') + ' came back to card after a break of ' + cs.days + '+ days' }),
         ': ' + eg.join('; ') + (cs.back.length > 4 ? '; and ' + (cs.back.length - 4) + ' more' : '') + '. The time they spent off card is skipped in their trend and Needs attention rather than counted as a slump.');
+    }
+    renderLost(a);
+  }
+
+  /** Lost customers: only ever from the notes file (status stopped ordering / closed). */
+  function renderLost(a) {
+    const cs = a.cardStop;
+    const box = clear($('tbl-lost'));
+    const cap = clear($('cap-lost'));
+    const anyNotes = Object.keys(state.notes).length > 0;
+    box.append(table([
+      { key: 'name', label: 'Customer', name: true, fmt: (r) => nameCell(r.name) },
+      { key: 'status', label: 'Status', fmt: (r) => r.status },
+      { key: 'since', label: 'Since', num: true, fmt: (r) => r.sinceText || '—', sort: (r) => r.since == null ? -Infinity : r.since },
+      { key: 'lastDay', label: 'Last card payment', num: true, fmt: (r) => fmtDay(r.lastDay) },
+      { key: 'gross', label: 'Card revenue in range', num: true, fmt: (r) => F.money(r.gross) },
+      { key: 'count', label: 'Payments', num: true },
+      { key: 'note', label: 'Note', fmt: (r) => el('span', { class: 'why', text: r.note || '' }) },
+    ], cs.lost, { sort: { key: 'gross', dir: -1 }, empty: anyNotes ? 'No customer in this range is marked stopped ordering or closed in your notes.' : 'No customer notes loaded. Use Customer notes (top right) to record who stopped ordering, who pays by EFT or cheque, and who pays monthly or seasonally.', good: anyNotes }));
+    if (cs.lost.length) {
+      const tot = cs.lost.reduce((x, r) => x + r.gross, 0);
+      cap.textContent = plural(cs.lost.length, 'customer') + ' with ' + F.money(tot) + ' of card revenue in this range. They are left out of every other customer list; their history still counts in totals and rankings.';
     }
   }
 
@@ -3055,7 +3304,8 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
     $('cap-attention').textContent = mo.attention.length
       ? plural(mo.attention.length, 'customer') + (mo.attention.length === 1 ? ' is' : ' are') + ' spending ' + F.money(total) + ' less per ' + n + ' than their baseline, in total. Shortfall = baseline − recent, per ' + n + '. Sorted by shortfall; click a column header to re-sort.' +
         (w.recentN === 1 && n === 'week' ? ' With only a few weeks of data one late order is enough to appear here; check Days since before calling.' : '') +
-        ' Customers who stopped paying by card are not listed here, and ' + n + 's spent entirely off card are left out of both averages.'
+        ' Customers who stopped paying by card, lost customers and customers with no regular rhythm (sporadic, on request, mixed payment) are not listed here, and ' + n + 's spent entirely off card are left out of both averages.' +
+        (mo.monthlySkipped ? ' ' + plural(mo.monthlySkipped, 'monthly payer') + ' from your notes ' + (mo.monthlySkipped === 1 ? 'is' : 'are') + ' only compared month to month, so not on a weekly export.' : '')
       : '';
   }
 
@@ -3126,12 +3376,12 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
       C.cadence(list, t, $('box-cadence'));
       const gaps = cad.map((x) => x.avgGap).sort((x, y) => x - y);
       const med = gaps.length % 2 ? gaps[(gaps.length - 1) / 2] : (gaps[gaps.length / 2 - 1] + gaps[gaps.length / 2]) / 2;
-      $('cap-cadence').textContent = 'The typical customer pays every ' + med.toFixed(1) + ' days (median). A ◆ far to the right of its bar means that customer is overdue compared with their own habit; amber ◆ = at least twice their usual gap. ' + plural(a.drifting.length, 'customer') + ' overdue in total. Only customers still paying by card are shown, and breaks of ' + a.cardStop.days + '+ days are left out of the usual gap.';
+      $('cap-cadence').textContent = 'The typical customer pays every ' + med.toFixed(1) + ' days (median). A ◆ far to the right of its bar means that customer is overdue compared with their own habit; amber ◆ = at least twice their usual gap. ' + plural(a.drifting.length, 'customer') + ' overdue in total. Only customers still paying by card with a regular rhythm are shown; breaks of ' + a.cardStop.days + '+ days are left out of the usual gap, and a cycle from your notes (weekly, monthly) replaces the measured gap.';
     }
     const dt = clear($('tbl-drifting'));
     dt.append(table([
       { key: 'name', label: 'Customer', name: true, fmt: (r) => nameCell(r.name) },
-      { key: 'avgGap', label: 'Usual gap', num: true, fmt: (r) => r.avgGap.toFixed(1) + ' days' },
+      { key: 'avgGap', label: 'Usual gap', num: true, fmt: (r) => r.avgGap.toFixed(1) + ' days' + (r.declared ? ' (' + r.declared + ')' : '') },
       { key: 'since', label: 'Days since last charge', num: true, fmt: (r) => F.int(r.since) },
       { key: 'ratio', label: '× usual gap', num: true, fmt: (r) => el('span', { class: 'neg', text: r.ratio.toFixed(1) + '×' }) },
       { key: 'gross', label: 'Revenue in period', num: true, fmt: (r) => F.money(r.gross / 100) },
@@ -3489,7 +3739,9 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
         slopes: Object.fromEntries(a.momentum.slopes.map((s) => [s.name, s.slope])),
         rfmSegments: a.rfm ? Object.fromEntries(a.rfm.segments.map((s) => [s.name, s.count])) : null,
         attention: a.momentum.attention.map((x) => x.name), threshold: a.threshold,
-        stopped: a.cardStop.stopped.map((x) => ({ name: x.name, lastDay: M.isoDate(x.lastDay), gross: x.gross })),
+        stopped: a.cardStop.stopped.map((x) => ({ name: x.name, lastDay: M.isoDate(x.lastDay), gross: x.gross, declared: !!x.declared })),
+        lost: a.cardStop.lost.map((x) => ({ name: x.name, status: x.status, since: x.sinceText || '' })), seasonalOff: a.cardStop.seasonal.map((x) => x.name),
+        notes: { loaded: Object.keys(state.notes).length, applied: a.notesApplied, monthlySkipped: a.momentum.monthlySkipped },
         backOnCard: a.cardStop.back.map((x) => ({ name: x.name, offFrom: M.isoDate(x.offFrom), backOn: M.isoDate(x.backOn) })),
         late: a.drifting.map((x) => x.name), cadence: Object.fromEntries(a.cadence.map((x) => [x.name, x.avgGap])),
         attentionDetail: a.momentum.attention.map((x) => ({ name: x.name, baseAvg: x.baseAvg, recentAvg: x.recentAvg })),
@@ -3663,11 +3915,115 @@ body.printing .yoy-row { grid-template-columns: minmax(0, 1fr); }
       state.groups = {};
       commitGroups('All groups removed.');
     });
-    C.setNameNote((name) => { const m = state.members.get(name); return m ? 'Combines: ' + m.map(G.display).join(' + ') : null; });
+    C.setNameNote((name) => {
+      const m = state.members.get(name), n = noteOf(name);
+      const bits = [];
+      if (m) bits.push('Combines: ' + m.map(G.display).join(' + '));
+      if (n) bits.push('Note: ' + N.describe(n));
+      return bits.length ? bits.join(' · ') : null;
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Customer notes dialog
+  // ---------------------------------------------------------------------------
+  function commitNotes(msg) {
+    saveStore();
+    if (state.rows) render();
+    renderNotesDialog();
+    if (msg) $('noteNote').textContent = msg;
+  }
+  const noteTag = (text) => (text ? el('span', { class: 'tag', text }) : el('span', { class: 'mut', text: '—' }));
+
+  function renderNotesDialog() {
+    const add = clear($('noteAdd')), list = clear($('noteList'));
+    const customers = state.rows ? [...new Set((state.mapped || state.rows).filter((r) => !r.oneTime).map((r) => r.customer))].sort((a, b) => a.localeCompare(b)) : [];
+    // Add / edit one note
+    add.append(el('h3', { text: 'Add or change a note' }));
+    const dl = el('datalist', { id: 'noteNames' }, customers.map((c) => el('option', { value: c })));
+    const nameIn = el('input', { type: 'text', list: 'noteNames', placeholder: 'Customer name (as shown in the dashboard)', 'aria-label': 'Customer' });
+    const sel = (opts, label) => el('select', { 'aria-label': label }, opts.map(([v, t]) => el('option', { value: v, text: t })));
+    const paysIn = sel([['', 'card'], ['EFT', 'EFT'], ['cheque', 'cheque'], ['mixed', 'mixed']], 'Pays by');
+    const cycleIn = sel([['', 'measured'], ['weekly', 'weekly'], ['monthly', 'monthly'], ['seasonal', 'seasonal'], ['sporadic', 'sporadic'], ['on request', 'on request']], 'Cycle');
+    const statusIn = sel([['', 'active'], ['stopped ordering', 'stopped ordering'], ['closed', 'closed']], 'Status');
+    const sinceIn = el('input', { type: 'text', placeholder: 'YYYY-MM', 'aria-label': 'Since', pattern: '\\d{4}(-\\d{1,2}(-\\d{1,2})?)?' });
+    const textIn = el('input', { type: 'text', placeholder: 'Note (optional)', 'aria-label': 'Note' });
+    const fill = (n) => { nameIn.value = n.name; paysIn.value = n.paysBy || ''; cycleIn.value = n.cycle || ''; statusIn.value = n.status || ''; sinceIn.value = n.sinceText || ''; textIn.value = n.note || ''; };
+    nameIn.addEventListener('change', () => { const n = noteOf(nameIn.value); if (n) fill(n); });
+    const saveBtn = el('button', { type: 'button', class: 'btn primary small', onclick: () => {
+      const name = nameIn.value.trim().replace(/\s+/g, ' ');
+      if (!name) { $('noteNote').textContent = 'Type or pick the customer name first.'; return; }
+      const since = N.parseSince(sinceIn.value);
+      if (since === undefined) { $('noteNote').textContent = 'Since should be YYYY-MM-DD or YYYY-MM.'; return; }
+      const note = { name, paysBy: paysIn.value || null, cycle: cycleIn.value || null, status: statusIn.value || null, since, sinceText: sinceIn.value.trim(), note: textIn.value.trim() };
+      if (!note.paysBy && !note.cycle && !note.status && !note.note && since == null) { delete state.notes[N.norm(name)]; commitNotes('Removed the note for “' + name + '”.'); return; }
+      state.notes[N.norm(name)] = note;
+      commitNotes('Saved the note for “' + name + '”' + (customers.length && !customers.some((c) => N.norm(c) === N.norm(name)) ? ' (no customer with that name in this file; check the spelling)' : '') + '.');
+      fill({ name: '' });
+    } }, 'Save note');
+    add.append(dl, el('div', { class: 'note-form' },
+      el('label', null, 'Customer', nameIn), el('label', null, 'Pays by', paysIn), el('label', null, 'Cycle', cycleIn),
+      el('label', null, 'Status', statusIn), el('label', null, 'Since', sinceIn), el('label', null, 'Note', textIn), saveBtn));
+
+    // Current notes
+    const notes = Object.values(state.notes).sort((a, b) => a.name.localeCompare(b.name));
+    list.append(el('h3', { text: 'Your notes (' + notes.length + ')' }));
+    if (!notes.length) list.append(el('p', { class: 'grp-empty', text: 'No notes yet. Add one above or load a notes file (a CSV with the columns Customer, Pays by, Cycle, Status, Since, Note).' }));
+    else {
+      list.append(el('div', { class: 'note-row head' }, ['Customer', 'Pays by', 'Cycle', 'Status', 'Since', 'Note', ''].map((t) => el('span', { text: t }))));
+      const inFile = new Set(customers.map(N.norm));
+      notes.forEach((n) => {
+        list.append(el('div', { class: 'note-row' },
+          el('span', { class: 'nm' }, n.name, state.rows && !inFile.has(N.norm(n.name)) ? el('span', { class: 'mut', text: ' · not in this file' }) : null),
+          noteTag(n.paysBy), noteTag(n.cycle), noteTag(n.status), el('span', { class: 'mut', text: n.sinceText || '—' }), el('span', { class: 'mut', text: n.note || '' }),
+          el('button', { type: 'button', class: 'x', title: 'Remove the note for ' + n.name, 'aria-label': 'Remove note for ' + n.name, text: '×', onclick: () => { delete state.notes[N.norm(n.name)]; commitNotes('Removed the note for “' + n.name + '”.'); } })));
+      });
+    }
+    $('noteNote').textContent = state.storeOk ? 'Saved in this browser only. Use “Save notes file” to keep a copy, edit it in a spreadsheet, or use it on another computer.'
+      : 'This browser is not allowing pages opened from disk to save settings, so notes last until the tab closes. Use “Save notes file” to keep them.';
+    $('noteClear').disabled = !notes.length;
+    updateNotesBadge();
+  }
+  function updateNotesBadge() {
+    const b = $('notesBadge');
+    const n = Object.keys(state.notes).length;
+    b.hidden = !n;
+    b.className = 'badge';
+    b.textContent = String(n);
+    b.title = plural(n, 'customer note');
+  }
+  function openNotes() { renderNotesDialog(); $('notesDialog').showModal(); }
+  function bindNotes() {
+    $('notesBtn').addEventListener('click', openNotes);
+    $('notesClose').addEventListener('click', () => $('notesDialog').close());
+    $('noteSave').addEventListener('click', () => {
+      const blob = new Blob([N.toCSV(state.notes)], { type: 'text/csv' });
+      const a = el('a', { href: URL.createObjectURL(blob), download: 'customer-notes.csv' });
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      $('noteNote').textContent = 'Saved customer-notes.csv. It contains customer names, so keep it with the groups file, not in shared folders.';
+    });
+    $('noteLoadInput').addEventListener('change', async (e) => {
+      const f = e.target.files[0];
+      e.target.value = '';
+      if (!f) return;
+      try {
+        const { byKey, count } = N.fromCSV(await f.text(), P.parseCSV);
+        Object.assign(state.notes, byKey);
+        commitNotes('Loaded ' + plural(count, 'note') + ' from ' + f.name + '.');
+      } catch (err) { $('noteNote').textContent = err.message; }
+    });
+    $('noteClear').addEventListener('click', () => {
+      if (!window.confirm('Remove all customer notes saved in this browser?')) return;
+      state.notes = {};
+      commitNotes('All notes removed.');
+    });
+    updateNotesBadge();
   }
 
   loadStore();
   bindGroups();
+  bindNotes();
   bind();
 })();
 

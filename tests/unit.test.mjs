@@ -7,6 +7,7 @@ const require = createRequire(import.meta.url);
 const P = require('../src/parse.js');
 const M = require('../src/metrics.js');
 const G = require('../src/groups.js');
+const N = require('../src/notes.js');
 const fs = require('node:fs');
 
 const iso = (day) => M.isoDate(day);
@@ -324,4 +325,54 @@ test('60+ days without a card payment: stopped paying by card, not slipping; bre
   const b = M.analyse(rows.filter((r) => r.day >= to - 44), {});
   assert.equal(b.cardStop.known, false);
   assert.equal(b.cardStop.stopped.length, 0);
+});
+
+test('customer notes: lost, EFT, monthly, seasonal and sporadic customers are treated as the notes say', () => {
+  const d = (s) => P.parseDate(s).day;
+  const from = d('05/01/2026'), to = from + 175;  // 176 days, weekly tracking
+  const rows = [];
+  const add = (customer, day, cents) => rows.push({ day, second: rows.length, line: rows.length, customer, oneTime: false, cents, card: 'VISA', status: 'Batched' });
+  for (const name of ['Weekly', 'Retired', 'On EFT', 'Monthly Late', 'Summer Only', 'Catering']) {
+    const step = name === 'Monthly Late' ? 30 : 7;
+    const end = name === 'Retired' ? to - 70 : name === 'On EFT' ? to - 20 : name === 'Monthly Late' ? to - 70 : name === 'Summer Only' ? to - 100 : name === 'Catering' ? to - 40 : to;
+    for (let day = from; day <= end; day += step) add(name, day, 10000);
+  }
+  rows.sort((x, y) => x.day - y.day || x.second - y.second);
+  const csv = [
+    'Customer,Pays by,Cycle,Status,Since,Note',
+    '"Retired","","","stopped ordering","2026-05","owner retired"',
+    '"on eft","E-transfer","","","2026-06",""',        // name matching ignores case; e-transfer is an EFT alias
+    '"Monthly Late","","30 day terms","","",""',
+    '"Summer Only","","Seasonal","","",""',
+    '"Catering","","sporadic","","","orders for events"',
+    '"Nobody","","monthly","","",""',                   // not in the file: loaded, not applied
+  ].join('\n');
+  const { byKey, count } = N.fromCSV(csv, P.parseCSV);
+  assert.equal(count, 6);
+  assert.equal(byKey['on eft'].paysBy, 'EFT');
+  assert.equal(byKey['monthly late'].cycle, 'monthly');
+  assert.equal(byKey['retired'].since, d('01/05/2026'));
+  assert.throws(() => N.fromCSV('Customer,Cycle\n"X","fortnightly"', P.parseCSV), /Cycle "fortnightly" is not one of/);
+  assert.throws(() => N.fromCSV('Customer,Since\n"X","June 2026"', P.parseCSV), /Since "June 2026"/);
+  assert.equal(N.fromCSV(N.toCSV(byKey), P.parseCSV).count, 6);  // round-trips
+
+  const plain = M.analyse(rows, {});
+  const a = M.analyse(rows, { notes: byKey });
+  assert.equal(a.notesApplied, 5);
+  // Without notes the data alone says: Monthly Late, Retired and Summer Only stopped (70, 70 and 100 days); On EFT and Catering are late.
+  assert.deepEqual(plain.cardStop.stopped.map((x) => x.name).sort(), ['Monthly Late', 'Retired', 'Summer Only']);
+  assert.deepEqual(plain.drifting.map((x) => x.name).sort(), ['Catering', 'On EFT']);
+  // With notes: Retired is lost (not stopped); On EFT is stopped now with the reason, 20 days in;
+  // Monthly Late (70 days) is overdue, not stopped, until 3 cycles; Summer Only is off season; Catering has no rhythm.
+  assert.deepEqual(a.cardStop.lost.map((x) => [x.name, x.status, x.sinceText]), [['Retired', 'stopped ordering', '2026-05']]);
+  assert.deepEqual(a.cardStop.stopped.map((x) => [x.name, x.declared, x.why]), [['On EFT', true, 'pays by EFT since 2026-06']]);
+  assert.deepEqual(a.cardStop.seasonal.map((x) => x.name), ['Summer Only']);
+  assert.deepEqual(a.drifting.map((x) => [x.name, x.avgGap.toFixed(1), x.declared]), [['Monthly Late', '30.4', 'monthly']]);
+  assert.equal(a.cardStop.stopped.find((x) => x.name === 'Monthly Late'), undefined);
+  // Lists that need a rhythm or a baseline leave the noted customers out; the weekly customer is untouched.
+  for (const list of [a.momentum.slopes, a.momentum.attention]) {
+    assert.equal(list.some((x) => ['Retired', 'On EFT', 'Summer Only', 'Catering', 'Monthly Late'].includes(x.name)), false);
+  }
+  assert.equal(a.momentum.monthlySkipped, 1);     // monthly payers are only compared month to month
+  assert.deepEqual(a.cadence.map((x) => x.name), ['Weekly', 'Monthly Late']);  // a declared cycle still has a rhythm to be late against
 });

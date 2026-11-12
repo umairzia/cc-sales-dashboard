@@ -50,8 +50,9 @@ if (!url.startsWith('file://')) fail('not loaded from file://');
 if ((await page.getAttribute('#app', 'data-state')) !== 'empty') fail('initial state is not the empty state');
 if (flag('--screenshot') && flag('--empty-shot')) await page.screenshot({ path: resolve(out, name + '-empty.png'), fullPage: true });
 
-// Optional customer-groups file, loaded through the dialog's real file input.
+// Optional customer-groups / customer-notes files, loaded through the dialogs' real file inputs.
 if (opt('--groups')) await page.setInputFiles('#grpLoadInput', resolve(opt('--groups')));
+if (opt('--notes')) await page.setInputFiles('#noteLoadInput', resolve(opt('--notes')));
 await page.setInputFiles('#fileInput', resolve(csv));
 await page.waitForFunction(() => document.getElementById('app').dataset.state !== 'empty', null, { timeout: 30000 });
 const stateNow = await page.getAttribute('#app', 'data-state');
@@ -143,6 +144,27 @@ if (expectError) {
         steps.push('groups: manual + clear');
       }
       await page.click('#groupsClose');
+      // Customer notes: add one through the form, see it applied, remove it again.
+      await page.click('#notesBtn');
+      if (!(await page.isVisible('#notesDialog'))) fail('customer notes dialog did not open');
+      else {
+        const first = await page.evaluate(() => (window.ccDashboard.summary().late[0] || window.ccDashboard.summary().attention[0] || null));
+        if (first) {
+          const before = await page.evaluate(() => window.ccDashboard.summary().lost.length);
+          await page.fill('#noteAdd input[list=noteNames]', first);
+          await page.selectOption('#noteAdd select[aria-label=Status]', 'stopped ordering');
+          await page.fill('#noteAdd input[aria-label=Since]', '2025-01');
+          await page.click('#noteAdd .btn.primary');
+          const s2 = await page.evaluate(() => window.ccDashboard.summary());
+          if (!s2.lost.some((x) => x.name === first)) fail('note did not move ' + first + ' to lost customers');
+          if (s2.late.includes(first) || s2.attention.includes(first)) fail('lost customer ' + first + ' still in late/attention');
+          await page.locator('#noteList .note-row', { hasText: first }).first().locator('.x').click();
+          const after = await page.evaluate(() => window.ccDashboard.summary().lost.length);
+          if (after !== before) fail('removing the note did not restore the lists (' + before + ' → ' + after + ')');
+          steps.push('notes: add + remove');
+        }
+      }
+      await page.click('#notesClose');
       await page.click('#dq summary'); steps.push('dq open');
       if (!(await page.isVisible('#dqBody'))) fail('data quality panel did not expand');
       // Custom date range narrowing re-buckets.

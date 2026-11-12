@@ -150,6 +150,24 @@ switches cards then looks like one account going quiet and a new one appearing.
 
 ![Customer groups dialog](docs/screenshots/customer-groups.png)
 
+**Customer notes: what the export can't show.** The export only lists card
+payments, so on its own it cannot tell a customer who stopped ordering from one
+who now pays by EFT, a monthly payer from a weekly one who is late, or a seasonal
+customer from a lost one. The people who run the accounts can. A small
+`customer-notes.csv` (edited in a spreadsheet or in the dialog, kept in the
+browser like groups) records it, and every list applies it:
+
+| Column | Values | Effect |
+|---|---|---|
+| Pays by | card, **EFT**, **cheque**, **mixed** | EFT / cheque: stopped paying by card at once, with the reason shown; mixed: never flagged for a drop or lateness |
+| Cycle | measured, **weekly**, **monthly**, **seasonal**, **sporadic**, **on request** | a declared cycle replaces the measured gap; monthly payers are compared month to month and count as stopped only after 3 cycles; seasonal customers are "off season", never stopped; sporadic / on request have no rhythm to be late against |
+| Status | active, **stopped ordering**, **closed** | moves the customer to a **Lost customers** list as of *Since*, and out of every other list |
+| Since, Note | a date, free text | shown in the tables |
+
+A value outside these lists is an error that names the line, never a guess.
+
+![Customer notes dialog](docs/screenshots/customer-notes.png)
+
 ## What's on the dashboard
 
 **Header and filters.** File name, data range, row count, currency; a date-range
@@ -210,10 +228,13 @@ with enough history, drawn as a diverging bar chart (deeper red = steeper
 decline). Next to it: a **Needs attention** table (recent spending at least *X*%
 below a baseline, with an adjustable threshold) and a **Stopped paying by card**
 list: customers with no card payment in the last 60 days, with the date of their
-last card payment, presumed to pay another way now. Customers who stopped paying
-by card are left out of the trend chart and Needs attention. Customers who came
-back to card after a 60+ day break are named under the list, and the periods they
-spent off card are skipped in their trend rather than counted as $0.
+last card payment, presumed to pay another way now, and a *Why* column filled from
+the customer notes. Customers who stopped paying by card are left out of the trend
+chart and Needs attention. Customers who came back to card after a 60+ day break
+are named under the list, and the periods they spent off card are skipped in their
+trend rather than counted as $0. A **Lost customers** table lists the customers the
+notes mark as stopped ordering or closed: the one list the export can never
+produce by itself.
 
 ![Customer trend, needs attention and stopped paying by card](docs/screenshots/momentum.png)
 
@@ -350,6 +371,13 @@ here so it isn't hidden in the code.
   left out of trends, Needs attention and cadence, because the slide to $0 is a
   change of payment method, not a decline. One-off customers are included: the
   list is a record of when card payments ended, not a churn alarm.
+- **Customer notes beat the data.** Where a note says EFT or cheque, the customer is
+  stopped at once; where it says stopped ordering or closed, they are lost, not
+  stopped; monthly payers are stopped only after three cycles (91 days) and are
+  compared month to month, so not on a weekly export; seasonal customers are never
+  stopped; sporadic, on-request and mixed payers have no rhythm, so are never
+  overdue or in Needs attention. Names are matched after groups, ignoring case and
+  punctuation. A note for a name not in the file is kept and reported, not applied.
 - **Breaks from card.** 60+ days between two card payments is a spell off card.
   Tracking periods wholly inside it are skipped (not counted as $0) in that
   customer's trend and Needs attention averages, and the break is left out of
@@ -387,9 +415,10 @@ reason for it. It ends with a table of what changed from the original 2025 analy
 
 The committed copy runs on the synthetic sample. To run it on a real export, put the CSV (and optionally a
 `customer-groups.csv` saved from the dashboard) next to the notebook, set `CSV_PATH` / `GROUPS_PATH` in the first
-cell, and run all cells. Its figures match the dashboard's on 31 cross-checks (totals to the cent, revenue per
+cell, and run all cells. Its figures match the dashboard's on 34 cross-checks (totals to the cent, revenue per
 period, every customer's trend, segments, needs attention, stopped paying by card, back on card, overdue
-customers and their usual gaps, started paying by card, KPI windows and suggested groups) for every timeframe: 3 weeks, 6 months, a year and 3 years. Needs `pandas`, `numpy` and `matplotlib`.
+customers and their usual gaps, started paying by card, KPI windows and suggested groups, customer notes and the lost list) for every timeframe: 3 weeks, 6 months, a year and 3 years. Needs `pandas`,
+`numpy` and `matplotlib`.
 
 ## Rebuilding from source
 
@@ -454,9 +483,10 @@ dependency.
    slope**, RFM segment sizes, the timeframe and its KPI comparison windows,
    year-over-year totals, who stopped paying by card (and when), who came back
    after a break, every usual payment gap, the overdue and needs-attention lists
-   (with their averages), and the text shown on the tiles. 41/41 checks pass on the
+   (with their averages), the customer notes (lost, seasonal, declared cycles and
+   payment methods) and the text shown on the tiles. 44/44 checks pass on the
    sample, on every timeframe fixture and on real exports, with and without
-   customer groups.
+   customer groups and customer notes.
 4. **Timeframes and edge cases.** A 3-week file reads as "a few weeks" (daily
    charts, 7-day comparisons, no "started paying by card" split or 60-day list), a 90-day file as "a few months", the
    12-month sample as "about a year", and 3- and 5-year files as "more than a year"

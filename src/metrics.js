@@ -16,6 +16,11 @@
   // "stopped paying by card as of <last card payment>", never as lost revenue,
   // and a 60+ day break between two card payments is "off card" for that time.
   const CARD_STOP_DAYS = 60;
+  // Declared payment cycles (customer notes), in days. A monthly payer is only
+  // "stopped" after three missed cycles, since one 60-day gap is a single
+  // missed payment for them.
+  const CYCLE_DAYS = { weekly: 7, monthly: 365.25 / 12 };
+  const normName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
   // ---------------------------------------------------------------------------
   // Calendar helpers
@@ -251,6 +256,9 @@
     const tf = timeframeOf(spanDays);
     const threshold = opt.threshold != null ? opt.threshold : 0.25;
     const successOnly = opt.status === 'success';
+    // Customer notes: what the export can't show (payment method, cycle, lost),
+    // keyed by normalised customer name. See notes.js.
+    const notes = opt.notes || {};
 
     const inRange = allRows.filter((r) => r.day >= from && r.day <= to);
     const scope = successOnly ? inRange.filter((r) => r.status === 'Batched') : inRange;
@@ -419,24 +427,51 @@
     // A gap of CARD_STOP_DAYS+ between two card payments is a spell off card
     // (paid another way, then came back); the same silence up to the end of the
     // range means the customer has stopped paying by card as of their last one.
+    // Customer notes override what the data alone would say:
+    //   status stopped ordering / closed → lost (a different list entirely);
+    //   pays by EFT / cheque → stopped paying by card now, with the reason;
+    //   cycle monthly → stopped only after three cycles (~91 days);
+    //   cycle seasonal → never stopped, "off season" instead.
+    const byGrossThenName = (a, b) => b.gross - a.gross || (a.name < b.name ? -1 : 1);
+    let notesApplied = 0;
     for (const c of named) {
+      c.note = notes[normName(c.name)] || null;
+      if (c.note) notesApplied++;
       c.breaks = [];
       for (let i = 1; i < c.days.length; i++) {
         const g = c.days[i] - c.days[i - 1];
         if (g >= CARD_STOP_DAYS) c.breaks.push({ from: c.days[i - 1], to: c.days[i], days: g });
       }
-      c.stopped = to - c.lastDay >= CARD_STOP_DAYS;
+      const n = c.note || {};
+      c.lost = !!n.status;
+      c.declaredGap = n.cycle && CYCLE_DAYS[n.cycle] ? CYCLE_DAYS[n.cycle] : null;
+      c.stopDays = n.cycle === 'monthly' ? Math.max(CARD_STOP_DAYS, Math.round(3 * CYCLE_DAYS.monthly)) : CARD_STOP_DAYS;
+      c.offCardMethod = n.paysBy === 'EFT' || n.paysBy === 'cheque';
+      c.seasonal = n.cycle === 'seasonal';
+      c.noRhythm = n.cycle === 'sporadic' || n.cycle === 'on request' || n.paysBy === 'mixed';
+      c.stopped = !c.lost && !c.seasonal && (c.offCardMethod || to - c.lastDay >= c.stopDays);
+      c.why = c.offCardMethod ? 'pays by ' + n.paysBy + (n.sinceText ? ' since ' + n.sinceText : '') + (n.note ? ' · ' + n.note : '')
+        : n.paysBy === 'mixed' ? 'mixed card / other payments' + (n.note ? ' · ' + n.note : '')
+        : n.cycle ? n.cycle + (n.note ? ' · ' + n.note : '') : n.note || null;
     }
     // A tracking period counts as off card when it lies wholly inside a break.
     const offCard = (c, p) => c.breaks.some((b) => b.from < p.start && p.end < b.to);
     const cardStop = {
-      days: CARD_STOP_DAYS, known: spanDays > CARD_STOP_DAYS, since: to - CARD_STOP_DAYS + 1,
+      days: CARD_STOP_DAYS, known: spanDays > CARD_STOP_DAYS, since: to - CARD_STOP_DAYS + 1, notesApplied,
       stopped: named.filter((c) => c.stopped)
-        .map((c) => ({ name: c.name, gross: c.gross / 100, count: c.count, firstDay: c.firstDay, lastDay: c.lastDay, since: to - c.lastDay }))
-        .sort((a, b) => b.gross - a.gross || (a.name < b.name ? -1 : 1)),
-      back: named.filter((c) => !c.stopped && c.breaks.length)
+        .map((c) => ({ name: c.name, gross: c.gross / 100, count: c.count, firstDay: c.firstDay, lastDay: c.lastDay, since: to - c.lastDay, why: c.why, declared: c.offCardMethod, stopDays: c.stopDays }))
+        .sort(byGrossThenName),
+      back: named.filter((c) => !c.stopped && !c.lost && c.breaks.length)
         .map((c) => { const b = c.breaks[c.breaks.length - 1]; return { name: c.name, gross: c.gross / 100, offFrom: b.from, backOn: b.to, days: b.days, breaks: c.breaks.length }; })
-        .sort((a, b) => b.gross - a.gross || (a.name < b.name ? -1 : 1)),
+        .sort(byGrossThenName),
+      // Lost customers: the business says they stopped ordering or closed.
+      lost: named.filter((c) => c.lost)
+        .map((c) => ({ name: c.name, status: c.note.status, since: c.note.since, sinceText: c.note.sinceText, gross: c.gross / 100, count: c.count, lastDay: c.lastDay, daysSince: to - c.lastDay, note: c.note.note }))
+        .sort(byGrossThenName),
+      // Seasonal customers who are silent: off season, not stopped.
+      seasonal: named.filter((c) => c.seasonal && to - c.lastDay >= CARD_STOP_DAYS)
+        .map((c) => ({ name: c.name, gross: c.gross / 100, lastDay: c.lastDay, since: to - c.lastDay }))
+        .sort(byGrossThenName),
     };
 
     const top15 = buyers.slice().sort(byGross).slice(0, 15);
@@ -464,13 +499,16 @@
 
     // Payment cadence: mean gap between distinct successful-charge days, for
     // customers still paying by card. Breaks of CARD_STOP_DAYS+ are time spent
-    // paying another way, not part of the rhythm, so they are left out.
-    const cadence = named.filter((c) => !c.stopped).map((c) => {
+    // paying another way, not part of the rhythm, so they are left out. A
+    // declared cycle (weekly, monthly) replaces the measured gap; customers
+    // with no rhythm (sporadic, on request, mixed, seasonal) or who are lost
+    // have no cadence to be late against.
+    const cadence = named.filter((c) => !c.stopped && !c.lost && !c.seasonal && !c.noRhythm).map((c) => {
       const gaps = c.days.slice(1).map((d, i) => d - c.days[i]).filter((g) => g < CARD_STOP_DAYS);
-      if (gaps.length < 2) return null;
-      const avg = mean(gaps);
+      if (!c.declaredGap && gaps.length < 2) return null;
+      const avg = c.declaredGap || mean(gaps);
       const since = to - c.lastDay;
-      return { name: c.name, avgGap: avg, since, ratio: avg ? since / avg : null, gross: c.gross, chargeDays: c.days.length };
+      return { name: c.name, avgGap: avg, since, ratio: avg ? since / avg : null, gross: c.gross, chargeDays: c.days.length, declared: c.declaredGap ? c.note.cycle : null };
     }).filter(Boolean).sort((a, b) => a.avgGap - b.avgGap || (a.name < b.name ? -1 : 1));
     const drifting = cadence.filter((c) => c.since >= 7 && c.ratio >= 2).sort((a, b) => b.gross - a.gross);
 
@@ -486,7 +524,10 @@
     }
     // Customers who stopped paying by card are not trending down or slipping:
     // they pay another way now, and are listed under "Stopped paying by card".
-    const tracked = named.filter((c) => !c.stopped);
+    // Lost, seasonal and no-rhythm customers have nothing to compare against
+    // either, and monthly payers are only compared when periods are months.
+    const tracked = named.filter((c) => !c.stopped && !c.lost && !c.seasonal && !c.noRhythm && !(c.note && c.note.cycle === 'monthly' && tf.period === 'week'));
+    momentum.monthlySkipped = tf.period === 'week' ? named.filter((c) => c.note && c.note.cycle === 'monthly' && !c.stopped && !c.lost).length : 0;
     // Trend: linear slope per period (the last 12 months for multi-year exports),
     // skipping periods the customer spent wholly off card.
     const t0 = tf.trendMax ? Math.max(0, P - tf.trendMax) : 0;
@@ -644,7 +685,7 @@
       runRate: { perWeek: (gross / spanDays) * 7, perMonth: (gross / spanDays) * (365.25 / 12) },
       series: { gross: s.gross, net, refunds: s.refunds, count: s.count, rolling, pop, hi, lo },
       totals, deltas, retry: Object.assign({}, retry, { looseRecovered }),
-      top15, pareto, concentration, perActive, cadence, drifting, momentum, cardStop, rfm, acq,
+      top15, pareto, concentration, perActive, cadence, drifting, momentum, cardStop, rfm, acq, notesApplied,
       risk: { MIN_TX, failureByCustomer, eligibleForFailure, cardMix, reasons: Object.values(reasons).sort((a, b) => b.count - a.count), voidCustomers },
       duplicates, rowsInScope: scope.length, rowsInRange: inRange.length,
       oneTime: oneTimeCust ? { gross: oneTimeCust.gross, count: oneTimeCust.count } : null,
@@ -654,7 +695,7 @@
   const api = {
     analyse, retryChains, buildBuckets, bucketStart, nextStart, autoUnit, slope, quartileScores, segmentOf,
     TIMEFRAMES, timeframeOf, trackingPeriods, periodIndex, dayRange,
-    ymd, dayOf, isoDate, longDate, UNITS, UNIT_LABEL, UNIT_NOUN, ROLLING, SEGMENTS, MONTHS, ONE_TIME, DAY_MS, CARD_STOP_DAYS,
+    ymd, dayOf, isoDate, longDate, UNITS, UNIT_LABEL, UNIT_NOUN, ROLLING, SEGMENTS, MONTHS, ONE_TIME, DAY_MS, CARD_STOP_DAYS, CYCLE_DAYS, normName,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.CCMetrics = api;

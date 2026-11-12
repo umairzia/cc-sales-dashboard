@@ -2,8 +2,8 @@
 """Independently recompute the dashboard's headline numbers with pandas and
 assert they match what the browser rendered.
 
-    node tests/e2e.mjs data.csv --out tests/output --name run [--groups groups.csv]
-    python3 tests/verify_metrics.py data.csv tests/output/run.json [--groups groups.csv]
+    node tests/e2e.mjs data.csv --out tests/output --name run [--groups groups.csv] [--notes notes.csv]
+    python3 tests/verify_metrics.py data.csv tests/output/run.json [--groups groups.csv] [--notes notes.csv]
 
 This is a separate implementation (pandas/numpy, not a port of metrics.js)
 of the rules in docs/csv-format.md. It checks exact cents, rates, top-5
@@ -48,6 +48,35 @@ def load_groups(path: str | None) -> tuple[dict[str, str], dict[str, str]]:
     by_name = {k: v for k, v in zip(names, groups) if k and v}
     by_holder = {h: v for k, h, v in zip(names, holders, groups) if not k and h and v}
     return by_name, by_holder
+
+
+NORM = lambda s: re.sub(r"[^a-z0-9]+", " ", str(s).lower()).strip()
+PAYS = {"card": None, "eft": "EFT", "etransfer": "EFT", "e transfer": "EFT", "bank transfer": "EFT", "cheque": "cheque", "check": "cheque", "mixed": "mixed", "card and eft": "mixed"}
+CYCLES = {"weekly": "weekly", "week": "weekly", "monthly": "monthly", "month": "monthly", "month to month": "monthly", "30 day terms": "monthly",
+          "seasonal": "seasonal", "sporadic": "sporadic", "occasional": "sporadic", "irregular": "sporadic", "rare": "sporadic",
+          "on request": "on request", "by request": "on request", "prior warning": "on request"}
+STATUSES = {"active": None, "stopped ordering": "stopped ordering", "stopped": "stopped ordering", "closed": "closed", "shut down": "closed", "lost": "stopped ordering"}
+
+
+def load_notes(path: str | None) -> dict[str, dict]:
+    """Customer-notes file (read independently): normalised name → {pays, cycle, status}."""
+    if not path:
+        return {}
+    g = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+    cols = {re.sub(r"[^a-z0-9]+", " ", c.lower()).strip(): c for c in g.columns}
+    col = lambda *names: next((cols[n] for n in names if n in cols), None)
+    ci, pi, yi, si = col("customer", "customer number", "name"), col("pays by", "payment method"), col("cycle", "terms"), col("status")
+    out = {}
+    for _, r in g.iterrows():
+        name = NORM(r[ci])
+        if not name:
+            continue
+        n = {"pays": PAYS[NORM(r[pi])] if pi and NORM(r[pi]) else None,
+             "cycle": CYCLES[NORM(r[yi])] if yi and NORM(r[yi]) else None,
+             "status": STATUSES[NORM(r[si])] if si and NORM(r[si]) else None}
+        if any(n.values()) or (col("note", "notes") and str(r[col("note", "notes")]).strip()) or (col("since") and str(r[col("since")]).strip()):
+            out[name] = n
+    return out
 
 
 def load(path: str, groups: tuple[dict[str, str], dict[str, str]] = ({}, {})) -> pd.DataFrame:
@@ -105,9 +134,10 @@ def money_text(cents: int) -> str:
     return f"${int(dollars):,}"
 
 
-def main(csv_path: str, json_path: str, groups_path: str | None = None) -> int:
+def main(csv_path: str, json_path: str, groups_path: str | None = None, notes_path: str | None = None) -> int:
     dash = json.load(open(json_path, encoding="utf-8"))["summary"]
     df = load(csv_path, load_groups(groups_path))
+    notes = load_notes(notes_path)
     lo, hi = df["day"].min(), df["day"].max()
     span = (hi - lo).days + 1
     unit = dash["unit"]
@@ -208,15 +238,28 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None) -> int:
     # Card payments: 60+ days between two card payments is a spell off card;
     # 60+ days from the last one to the end of the range means the customer
     # stopped paying by card as of that day (presumed EFT or stopped trading).
+    # Customer notes override: stopped ordering / closed → lost; EFT / cheque →
+    # stopped now; monthly → stopped after 3 cycles; seasonal → never stopped.
     STOP = 60
+    MONTH = 365.25 / 12
     pay_days = {c: sorted(set(d)) for c, d in named.groupby("cust").day}
     breaks = {c: [(a, b) for a, b in zip(d, d[1:]) if (b - a).days >= STOP] for c, d in pay_days.items()}
-    stopped = {c for c, d in pay_days.items() if (hi - d[-1]).days >= STOP}
+    note = lambda c: notes.get(NORM(c), {})
+    lost = {c for c in pay_days if note(c).get("status")}
+    seasonal = {c for c in pay_days if note(c).get("cycle") == "seasonal"}
+    no_rhythm = {c for c in pay_days if note(c).get("cycle") in ("sporadic", "on request") or note(c).get("pays") == "mixed"}
+    monthly = {c for c in pay_days if note(c).get("cycle") == "monthly"}
+    stop_days = lambda c: max(STOP, round(3 * MONTH)) if c in monthly else STOP
+    stopped = {c for c, d in pay_days.items() if c not in lost and c not in seasonal
+               and (note(c).get("pays") in ("EFT", "cheque") or (hi - d[-1]).days >= stop_days(c))}
     iso = lambda d: d.strftime("%Y-%m-%d")
-    eq("stopped paying by card (name, as of)", sorted((c, iso(pay_days[c][-1])) for c in stopped),
-       sorted((x["name"], x["lastDay"]) for x in dash["stopped"]))
+    eq("notes applied", sum(1 for c in pay_days if NORM(c) in notes), dash["notes"]["applied"])
+    eq("lost customers (name, status)", sorted((c, note(c)["status"]) for c in lost), sorted((x["name"], x["status"]) for x in dash["lost"]))
+    eq("seasonal customers off season", sorted(c for c in seasonal if (hi - pay_days[c][-1]).days >= STOP), sorted(dash["seasonalOff"]))
+    eq("stopped paying by card (name, as of, from notes)", sorted((c, iso(pay_days[c][-1]), note(c).get("pays") in ("EFT", "cheque")) for c in stopped),
+       sorted((x["name"], x["lastDay"], x["declared"]) for x in dash["stopped"]))
     eq("back on card after a break (name, off, back)",
-       sorted((c, iso(b[-1][0]), iso(b[-1][1])) for c, b in breaks.items() if b and c not in stopped),
+       sorted((c, iso(b[-1][0]), iso(b[-1][1])) for c, b in breaks.items() if b and c not in stopped and c not in lost),
        sorted((x["name"], x["offFrom"], x["backOn"]) for x in dash["backOnCard"]))
 
     def off_card(c, i):
@@ -224,11 +267,17 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None) -> int:
         s0, s1 = bounds[i]
         return any(a < s0 and s1 < b for a, b in breaks[c])
 
-    # Usual gap: on-card gaps only (breaks left out), current card payers only.
+    # Usual gap: on-card gaps only (breaks left out), current card payers with a
+    # rhythm only; a declared weekly / monthly cycle replaces the measured gap.
     cad = {}
     for c, d in pay_days.items():
+        if c in stopped or c in lost or c in seasonal or c in no_rhythm:
+            continue
         gaps = [(b - a).days for a, b in zip(d, d[1:]) if (b - a).days < STOP]
-        if c not in stopped and len(gaps) >= 2:
+        cyc = note(c).get("cycle")
+        if cyc in ("weekly", "monthly"):
+            cad[c] = 7.0 if cyc == "weekly" else MONTH
+        elif len(gaps) >= 2:
             cad[c] = float(np.mean(gaps))
     eq("payment cadence customers", sorted(cad), sorted(dash["cadence"]))
     eq("max |usual gap difference| (days)", max((abs(v - dash["cadence"].get(c, np.inf)) for c, v in cad.items()), default=0.0), 0.0, 1e-9)
@@ -237,8 +286,10 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None) -> int:
 
     # Trend slopes: last 12 months for multi-year exports, otherwise all
     # periods, from the customer's first period, skipping periods spent wholly
-    # off card; customers who stopped paying by card have no trend. Short
+    # off card. Stopped, lost, seasonal and no-rhythm customers have no trend,
+    # and monthly payers are only compared when periods are months. Short
     # exports need 3 periods with 2 active, the rest 4 with 3 active.
+    untracked = stopped | lost | seasonal | no_rhythm | (monthly if tf in ("short", "medium") else set())
     need, need_active = (3, 2) if tf == "short" else (4, 3)
     t0 = max(0, len(bounds) - 12) if tf == "multi" else 0
     first_day = named.groupby("cust").day.min()
@@ -246,7 +297,7 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None) -> int:
     if len(bounds) - t0 >= need:
         for cust, ys_all in series.items():
             f = period_of(first_day[cust])
-            if f >= len(bounds) or cust in stopped:
+            if f >= len(bounds) or cust in untracked:
                 continue
             xs = [i for i in range(max(t0, f, 0), len(bounds)) if not off_card(cust, i)]
             ys = ys_all[xs]
@@ -277,7 +328,7 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None) -> int:
     attn = {}
     if r_idx:
         for cust, ys in series.items():
-            if cust in stopped:
+            if cust in untracked:
                 continue
             b_on = [i for i in b_idx if not off_card(cust, i)]
             r_on = [i for i in r_idx if not off_card(cust, i)]
@@ -363,12 +414,16 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None) -> int:
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-    groups = None
+    groups = notes = None
     if "--groups" in args:
         i = args.index("--groups")
         groups = args[i + 1]
         del args[i:i + 2]
+    if "--notes" in args:
+        i = args.index("--notes")
+        notes = args[i + 1]
+        del args[i:i + 2]
     if len(args) != 2:
         print(__doc__)
         sys.exit(2)
-    sys.exit(main(args[0], args[1], groups))
+    sys.exit(main(args[0], args[1], groups, notes))

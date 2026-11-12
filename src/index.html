@@ -114,6 +114,7 @@
       </div>
       <div class="filters-spacer"></div>
       <button type="button" class="btn" id="groupsBtn" aria-haspopup="dialog">Customer groups<span class="badge" id="groupsBadge" hidden></span></button>
+      <button type="button" class="btn" id="notesBtn" aria-haspopup="dialog">Customer notes<span class="badge" id="notesBadge" hidden></span></button>
       <button type="button" class="btn" id="printBtn">Print / PDF</button>
     </div>
     <p class="print-summary" id="printSummary"></p>
@@ -184,6 +185,13 @@
             <p class="caption" id="cap-stopped"></p>
           </article>
         </div>
+        <article class="card span-2" id="card-lost">
+          <header class="card-head">
+            <div><h3>Lost customers</h3><p class="card-sub" id="s-lost">Customers your notes file marks as stopped ordering or closed. The export can’t tell these from customers who moved to EFT, so this list only comes from the notes.</p></div>
+          </header>
+          <div class="table-wrap scroll mid" id="tbl-lost"></div>
+          <p class="caption" id="cap-lost"></p>
+        </article>
       </div>
     </section>
 
@@ -341,10 +349,33 @@
   </div>
 </dialog>
 
+<!-- Customer notes: what the export can't show (payment method, cycle, lost) -->
+<dialog class="dialog" id="notesDialog" aria-labelledby="notesTitle">
+  <div class="dialog-head">
+    <div>
+      <h2 id="notesTitle">Customer notes</h2>
+      <p class="card-sub">The export only shows card payments. It can’t tell a customer who stopped ordering from one who pays by EFT now, or a monthly payer from a weekly one who is late. Record what you know here and every list applies it: <strong>Pays by</strong> EFT or cheque marks them as stopped paying by card (with the reason); <strong>Cycle</strong> monthly compares them month to month, seasonal never flags them, sporadic or on request means no rhythm to be late against; <strong>Status</strong> stopped ordering or closed moves them to Lost customers. Notes are kept in this browser; save the file to keep a copy or edit it in a spreadsheet.</p>
+    </div>
+    <button type="button" class="btn primary" id="notesClose">Done</button>
+  </div>
+  <div class="dialog-body">
+    <section class="grp-section" id="noteAdd"></section>
+    <section class="grp-section" id="noteList"></section>
+  </div>
+  <div class="dialog-foot">
+    <button type="button" class="btn" id="noteSave">Save notes file…</button>
+    <label class="btn" for="noteLoadInput" tabindex="0">Load notes file…</label>
+    <input type="file" id="noteLoadInput" class="visually-hidden" accept=".csv,text/csv">
+    <button type="button" class="btn danger" id="noteClear">Remove all notes</button>
+    <span class="dialog-note" id="noteNote" role="status"></span>
+  </div>
+</dialog>
+
 <script src="../vendor/chart.umd.min.js"></script>
 <script src="parse.js"></script>
 <script src="metrics.js"></script>
 <script src="groups.js"></script>
+<script src="notes.js"></script>
 <script src="charts.js"></script>
 <script src="app.js"></script>
 </body>

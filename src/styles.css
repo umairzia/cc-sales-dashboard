@@ -314,8 +314,21 @@ table.data tbody tr:hover { background: var(--surface-2); }
 .grp-pick label { display: grid; grid-template-columns: 22px minmax(200px, 1.4fr) 110px minmax(140px, 1fr) minmax(140px, 1fr); gap: 8px; align-items: center; padding: 5px 10px; font-size: 12.5px; border-bottom: 1px solid var(--border); cursor: pointer; }
 .grp-pick label:hover { background: var(--surface-2); }
 .grp-pick .num { text-align: right; }
+.note-form { display: grid; grid-template-columns: minmax(180px, 1.3fr) 96px 118px 150px 96px minmax(120px, 1fr) auto; gap: 8px; align-items: end; }
+.note-form label { display: grid; gap: 3px; font-size: 11.5px; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em; }
+.note-form input, .note-form select { border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); border-radius: 7px; padding: 6px 8px; font-size: 13px; font-family: inherit; }
+.note-row { display: grid; grid-template-columns: minmax(200px, 1.5fr) 90px 100px 130px 90px minmax(160px, 1.6fr) 28px; gap: 10px; align-items: center; font-size: 12.5px; padding: 5px 6px; border-radius: 6px; }
+.note-row:hover { background: var(--surface-2); }
+.note-row.head { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.note-row .nm { font-weight: 600; }
+.note-row .mut { color: var(--text-2); }
+.note-row .x { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 15px; padding: 0; }
+.note-row .x:hover { color: var(--bad-text); }
+.note-row .tag { display: inline-block; padding: 1px 7px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); font-size: 11.5px; }
+.why { color: var(--text-2); font-size: 12px; }
 .grp-pick .mut { color: var(--text-2); }
 .tag.grp { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-ink); cursor: help; }
+.tag.note { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--text); cursor: help; }
 
 /* --- Data quality --------------------------------------------------------------------------- */
 .dq { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 0 16px; }

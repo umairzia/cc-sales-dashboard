@@ -184,3 +184,26 @@ Exports of 60 days or less can't show anyone as stopped. A customer's first card
 payment after the settling-in window is labelled **started paying by card**, not
 "new customer", because it can also be an existing account moving from EFT or
 returning after a break.
+
+## Customer notes
+
+`customer-notes.csv` carries what the export can't show, one row per customer,
+matched by name after customer groups (case and punctuation ignored). Blank
+cells mean "work it out from the data". Values are normalised (`e-transfer` →
+EFT, `30 day terms` → monthly, `shut down` → closed); anything else is rejected
+with the line number.
+
+```csv
+Customer,Pays by,Cycle,Status,Since,Note
+"Fig Deli","EFT","","","2026-06","moved to EFT in June"
+"Harbour Grill","","monthly","","","30-day terms"
+"Old Mill Tavern","","","closed","2026-03",""
+```
+
+| Column | Values | Effect on the lists |
+|---|---|---|
+| Pays by | card (default), EFT, cheque, mixed | EFT / cheque → stopped paying by card as of the last card payment, no 60-day wait, reason shown. mixed → never in Needs attention or Overdue (card share varies); 60-day stop still applies |
+| Cycle | measured (default), weekly, monthly, seasonal, sporadic, on request | weekly / monthly replace the measured gap. monthly → stopped only after `max(60, 3 × 30.44)` = 91 days; compared only when tracking periods are months. seasonal → never stopped, overdue or in Needs attention / trends; listed as off season after 60 days. sporadic / on request → no rhythm: never overdue, in Needs attention or trends; 60-day stop still applies |
+| Status | active (default), stopped ordering, closed | → **Lost customers**, with *Since*; left out of stopped, back-on-card, cadence, trends and Needs attention. History still counts in totals, rankings, RFM and acquisition |
+| Since | `YYYY-MM-DD` or `YYYY-MM` | shown; not used in calculations |
+| Note | free text | shown next to the name |
