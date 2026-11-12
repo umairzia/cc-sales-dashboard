@@ -173,6 +173,51 @@ if (expectError) {
       const unitNarrow = await page.evaluate(() => window.ccDashboard.analysis.unit);
       result.narrowUnit = unitNarrow;
       await page.selectOption('#preset', 'all');
+
+      // Theme: light by default; the switch applies the navy dark theme and repaints; back to light.
+      const bg = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+      if ((await page.evaluate(() => window.ccDashboard.summary().theme)) !== 'light') fail('the default theme is not light');
+      await page.click('#themeSwitch [data-theme-value=dark]');
+      if ((await bg()) !== 'rgb(24, 28, 39)') fail('dark theme background is ' + (await bg()) + ', expected navy rgb(24, 28, 39)');
+      await page.click('#themeSwitch [data-theme-value=light]');
+      if ((await page.evaluate(() => document.documentElement.dataset.theme || 'light')) !== 'light') fail('theme did not switch back to light');
+      steps.push('theme: light → dark → light');
+
+      // Customer explorer: tick the 3 biggest customers through the picker, then open one from an Overview name link.
+      await page.click('#tab-explorer');
+      if (!(await page.isVisible('#view-explorer')) || (await page.isVisible('#view-overview'))) fail('explorer tab did not switch views');
+      await page.click('#xPickerBtn');
+      const boxes = page.locator('#xList .x-opt input');
+      const pick = Math.min(3, await boxes.count());
+      for (let i = 0; i < pick; i++) await boxes.nth(i).check();
+      await page.keyboard.press('Escape');
+      const ex = await page.evaluate(() => window.ccDashboard.summary().explorer);
+      if (ex.selected.length !== pick) fail('explorer has ' + ex.selected.length + ' customers ticked, expected ' + pick);
+      const xCharts = await page.evaluate(() => Object.keys(window.CCCharts.registry).filter((k) => k.startsWith('x')).sort());
+      const wantCharts = pick > 1 ? ['xPayments', 'xRevenue', 'xShare'] : ['xPayments', 'xRevenue'];
+      if (JSON.stringify(xCharts) !== JSON.stringify(wantCharts)) fail('explorer charts ' + xCharts.join(', ') + ', expected ' + wantCharts.join(', '));
+      if ((await page.$$eval('#xKpis .kpi', (n) => n.length)) !== 8) fail('explorer does not show 8 KPI tiles');
+      const xText = await page.textContent('#view-explorer');
+      if (/NaN|undefined|\[object/.test(xText)) fail('explorer text contains NaN/undefined/[object');
+      result.summary.explorerCheck = ex;
+      steps.push('explorer: ' + pick + ' customers, ' + xCharts.length + ' charts');
+      await page.click('#themeSwitch [data-theme-value=dark]');   // explorer repaints in dark too
+      await page.click('#themeSwitch [data-theme-value=light]');
+      await page.click('#xClear').catch(() => {});
+      await page.click('#xChips .x-chip button').catch(() => {});
+      while (await page.$('#xChips .x-chip button')) await page.click('#xChips .x-chip button');
+      if ((await page.evaluate(() => window.ccDashboard.summary().explorer.selected.length)) !== 0) fail('removing chips did not clear the selection');
+      await page.click('#tab-overview');
+      const link = page.locator('#view-overview a.cust-link').first();
+      if (await link.count()) {
+        const nm = (await link.textContent()).trim();
+        await link.click();
+        const sel = await page.evaluate(() => window.ccDashboard.summary());
+        if (sel.view !== 'explorer' || sel.explorer.selected.length !== 1 || sel.explorer.selected[0] !== nm) fail('clicking “' + nm + '” did not open it alone in the explorer');
+        steps.push('name link → explorer');
+        await page.click('#xChips .x-chip button');
+        await page.click('#tab-overview');
+      }
       result.interactions = steps;
       if (flag('--screenshot')) await page.screenshot({ path: resolve(out, name + '-dq.png'), fullPage: true });
       await page.click('#dq summary');

@@ -30,7 +30,10 @@ file that anyone on the team can open.
 3. Drag a transaction export onto the page, or click to browse.
 4. Use the filter bar to narrow the date range, change the grouping
    (day / week / month / quarter), or show successful charges only.
-5. **Print / PDF** produces a clean, light-themed report to send to someone else.
+5. Switch to the **Customer explorer** tab to tick one or more customers and see
+   only their figures and charts, side by side.
+6. **Print / PDF** produces a clean, light-themed report to send to someone else.
+   The **Light / Dark** switch in the top-right corner changes the screen theme.
 
 To try it without real data, load [`sample-data/sample_transactions.csv`](sample-data/sample_transactions.csv).
 
@@ -271,10 +274,38 @@ it trustworthy.
 
 ![Data quality panel](docs/screenshots/data-quality.png)
 
+**Customer explorer (second tab).** A "Select customers" drop-down lists every
+customer, biggest first or A–Z, with a search box and a tick box beside each name.
+Tick one customer to see only their figures; tick several to compare them. The
+same period, grouping and status filters apply. Everything on the tab is
+recalculated for the ticked customers only:
+
+- **Eight tiles** (revenue, net, payments, average, active, success rate, retry
+  recovery, voided) with the same period comparison as the Overview.
+- **Revenue per period**: bars for one customer, one coloured line per customer
+  for several (the first seven individually, the rest as one grey line).
+- **Every payment**: each charge as a dot, date across and amount up, with failed
+  charges as ✕ and voids hollow, so rhythm, order size and gaps are visible at a
+  glance.
+- **Share of the ticked customers' revenue** and **cards used**.
+- **Side by side**: revenue, share of all revenue, payments, average, revenue per
+  active period, last payment, days since, usual gap, trend, success rate,
+  failures, voids and RFM segment, with a status from the same lists as the
+  Overview (Needs attention, Overdue, Stopped paying by card, Lost, Back on card,
+  Off season) including the customer notes.
+- **Failed and voided charges**, newest first, with the reason and whether a
+  retry went through.
+
+Quick picks fill the selection from the Top 5, Needs attention, Overdue or Stopped
+lists, and any customer name in an Overview table opens that customer here.
+
+![Customer explorer with three customers ticked](docs/screenshots/explorer.png)
+
 Every chart has a title, axis labels and a one-line caption in plain English. Colour
 is never the only signal: growth and decline also carry ▲ / ▼ and a sign, partial
-periods are hatched and starred, and the one-time aggregate is tagged. Light and dark
-mode follow the operating system.
+periods are hatched and starred, and the one-time aggregate is tagged. **Light is the
+default**; the Light / Dark switch applies a navy dark theme and is remembered in that
+browser. Printing is always light.
 
 | Empty state | Error state | Dark mode |
 |---|---|---|

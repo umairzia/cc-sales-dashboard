@@ -628,10 +628,114 @@
     }, 'Bar chart of failure rate by card type');
   }
 
+  // ---------------------------------------------------------------------------
+  // Customer explorer
+  // ---------------------------------------------------------------------------
+  /** Categorical colours for ticked customers: distinct in both themes. */
+  function custColors(t) { return [t.accent, t.series2, t.series3, '#8e5bd6', t.series4, '#d6457f', '#139fb0', t.neutralMark]; }
+
+  /** Revenue per period: bars for one customer, a line per customer for several. */
+  function xRevenue(buckets, series, t, unitNoun) {
+    const labels = buckets.map((b) => b.short + (b.partial ? '*' : ''));
+    const one = series.length === 1;
+    const datasets = series.map((x) => (one ? {
+      type: 'bar', label: x.name, data: x.data.map((c) => c / 100),
+      backgroundColor: buckets.map((b) => (b.partial ? hatch(t.accentSoft, x.color) : x.color)),
+      borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: 'start', maxBarThickness: 34, barPercentage: 0.82, categoryPercentage: 0.9,
+    } : {
+      type: 'line', label: x.name, data: x.data.map((c) => c / 100), borderColor: x.color, backgroundColor: x.color,
+      borderWidth: 2, pointRadius: buckets.length > 40 ? 0 : 2.5, pointHoverRadius: 5, tension: 0.25,
+      borderDash: x.other ? [5, 4] : undefined,
+      segment: { borderDash: (ctx) => (buckets[ctx.p1DataIndex] && buckets[ctx.p1DataIndex].partial ? [3, 3] : x.other ? [5, 4] : undefined) },
+    }));
+    return make('xRevenue', {
+      data: { labels, datasets },
+      options: {
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+          x: { grid: { display: false }, ticks: ticks(t, { maxRotation: 0, autoSkip: true, autoSkipPadding: 10 }), title: axisTitle('Period (* = partial)', t), border: { color: t.axis } },
+          y: { beginAtZero: true, grace: '8%', grid: gridOpts(t), border: { display: false }, ticks: ticks(t, { callback: (v) => Fmt.compact(v), maxTicksLimit: 7 }), title: axisTitle('Revenue per ' + unitNoun, t) },
+        },
+        plugins: {
+          legend: { display: !one, labels: { usePointStyle: true, pointStyle: 'line', pointStyleWidth: 18 } },
+          tooltip: {
+            itemSort: (x, y) => y.raw - x.raw,
+            callbacks: {
+              title: (items) => { const b = buckets[items[0].dataIndex]; return b.label + (b.partial ? ' (partial)' : ''); },
+              label: (ctx) => ' ' + ctx.dataset.label + ': ' + Fmt.money(ctx.raw),
+            },
+          },
+        },
+      },
+    }, one ? 'Bar chart of this customer’s revenue per period' : 'Line chart of revenue per period, one line per selected customer');
+  }
+
+  /** Every payment attempt as a dot: x = date, y = amount. Failed = ✕, voided = hollow. */
+  function xPayments(points, legend, from, to, t) {
+    const MONTHS = window.CCMetrics.MONTHS;
+    const longSpan = to - from > 120;
+    const dayLabel = (d) => { const x = new Date(d * 86400000); return x.getUTCDate() + ' ' + MONTHS[x.getUTCMonth()] + (longSpan ? " '" + String(x.getUTCFullYear()).slice(2) : ''); };
+    const byKey = new Map();
+    points.forEach((p) => {
+      const k = p.status === 'Batched' ? 'ok:' + p.series : p.status;
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(p);
+    });
+    const datasets = [];
+    legend.forEach((l) => {
+      const pts = byKey.get('ok:' + l.name);
+      if (pts) datasets.push({ label: l.name, data: pts, backgroundColor: alpha(hexOr(l.color), 0.8), borderColor: l.color, pointRadius: 3.5, pointHoverRadius: 6 });
+    });
+    if (byKey.get('Failed')) datasets.push({ label: 'Failed', data: byKey.get('Failed'), pointStyle: 'crossRot', borderColor: t.bad, backgroundColor: t.bad, borderWidth: 2, pointRadius: 5, pointHoverRadius: 7 });
+    if (byKey.get('Voided')) datasets.push({ label: 'Voided', data: byKey.get('Voided'), pointStyle: 'circle', borderColor: t.neutralMark, backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 4, pointHoverRadius: 6 });
+    return make('xPayments', {
+      type: 'scatter',
+      data: { datasets },
+      options: {
+        parsing: { xAxisKey: 'x', yAxisKey: 'y' },
+        scales: {
+          x: {
+            type: 'linear', min: from - 1, max: to + 1, grid: gridOpts(t), border: { color: t.axis }, title: axisTitle('Date', t),
+            ticks: ticks(t, { callback: (v) => dayLabel(Math.round(v)), maxRotation: 0, autoSkip: false }),
+            // Calendar ticks: month starts for long ranges (every 2nd/3rd when long), Mondays for short ones.
+            afterBuildTicks: (axis) => {
+              const out = [];
+              const span = to - from;
+              if (span > 120) {
+                const step = span > 1100 ? 6 : span > 700 ? 3 : span > 400 ? 2 : 1;
+                const d0 = new Date(from * 86400000);
+                for (let y = d0.getUTCFullYear(), m = d0.getUTCMonth() + 1; ; m += step) {
+                  const day = Math.round(Date.UTC(y, m, 1) / 86400000);
+                  if (day > to) break;
+                  out.push({ value: day });
+                }
+              } else {
+                const step = span > 60 ? 14 : 7;
+                for (let d = from + ((11 - ((from + 3) % 7)) % 7); d <= to; d += step) out.push({ value: d });
+              }
+              axis.ticks = out;
+            },
+          },
+          y: { beginAtZero: true, grace: '8%', grid: gridOpts(t), border: { display: false }, ticks: ticks(t, { callback: (v) => Fmt.compact(v), maxTicksLimit: 6 }), title: axisTitle('Amount', t) },
+        },
+        plugins: {
+          legend: { labels: { usePointStyle: true } },
+          tooltip: {
+            callbacks: {
+              title: (items) => dayLabel(items[0].raw.x) + ' ' + (longSpan ? '' : new Date(items[0].raw.x * 86400000).getUTCFullYear()),
+              label: (ctx) => { const p = ctx.raw; return ' ' + p.customer + ': ' + Fmt.money(p.y) + (p.status === 'Batched' ? '' : ' · ' + p.status.toLowerCase() + (p.reason ? ' (' + p.reason + ')' : '')); },
+            },
+          },
+        },
+      },
+    }, 'Scatter chart of every payment attempt by date and amount');
+  }
+
   root.CCFormat = Fmt;
   root.CCCharts = {
     theme, configure, destroy, destroyAll, setEmpty, make, mix, alpha, hatch, setNameNote,
     revenue, pop, yoy, slopes, hbar, pareto, cadence, rfmBar, acquisition, cardMix, cardFail, cardColor, segColors,
+    custColors, xRevenue, xPayments,
     registry,
   };
 })(window);

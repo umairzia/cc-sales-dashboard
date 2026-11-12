@@ -50,11 +50,21 @@ await shoot('light', async (page) => {
   await page.click('#notesClose');
   await page.click('#dq summary');
   await page.locator('#dq').screenshot({ path: resolve(out, 'data-quality.png') });
+  // Customer explorer: the three biggest customers ticked through the picker.
+  await page.click('#tab-explorer');
+  await page.click('#xPickerBtn');
+  for (let i = 0; i < 3; i++) await page.locator('#xList .x-opt input').nth(i).check();
+  await page.screenshot({ path: resolve(out, 'explorer-picker.png'), clip: { x: 0, y: 150, width: 1360, height: 640 } });
+  await page.keyboard.press('Escape');
+  await page.locator('#view-explorer').screenshot({ path: resolve(out, 'explorer.png') });
+  await page.click('#xClear').catch(() => {});
+  await page.click('#tab-overview');
   await load(page, resolve(root, 'tests', 'fixtures', 'missing_status_column.csv'));
   await page.screenshot({ path: resolve(out, 'error-state.png'), clip: { x: 0, y: 0, width: 1360, height: 520 } });
 });
-await shoot('dark', async (page) => {
+await shoot('light', async (page) => {
   await load(page, sample);
+  await page.click('#themeSwitch [data-theme-value=dark]');   // the Light / Dark switch; light is the default
   await page.screenshot({ path: resolve(out, 'overview-dark.png'), clip: { x: 0, y: 0, width: 1360, height: 1180 } });
 });
 await browser.close();

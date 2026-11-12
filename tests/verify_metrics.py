@@ -394,6 +394,15 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None, notes_pa
         counts = pd.Series(seg).value_counts().to_dict()
         eq("RFM segment sizes", {k: counts.get(k, 0) for k in ["High-Value Regular", "Loyal", "At Risk", "Dormant"]}, dash["rfmSegments"])
 
+    # Customer explorer: only the ticked customers' rows (when the browser test ticked some).
+    ex = dash.get("explorerCheck")
+    if ex and ex.get("selected"):
+        picked = set(ex["selected"])
+        mine_sales = sales[sales.cust.isin(picked)]
+        eq("explorer: ticked customers are the biggest by revenue", sorted(picked), sorted(by_cust.index[:len(picked)]))
+        eq("explorer: gross of ticked customers (cents)", int(mine_sales.cents.sum()), ex["gross"])
+        eq("explorer: successful charges of ticked customers", len(mine_sales), ex["count"])
+
     # What the tiles actually say on screen.
     kpi = {k["key"]: k["value"] for k in dash["kpiText"]}
     eq("tile text: gross revenue", money_text(gross), kpi["gross"])

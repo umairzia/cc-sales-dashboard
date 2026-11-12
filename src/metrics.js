@@ -415,7 +415,7 @@
       if (r.day > c.lastDay) c.lastDay = r.day;
       if (c.days[c.days.length - 1] !== r.day) c.days.push(r.day);
     }
-    for (const r of attempts) { const c = getC(r); c.attempts++; if (r.status === 'Failed') c.failed++; }
+    for (const r of attempts) { const c = getC(r); c.attempts++; if (r.status === 'Failed') c.failed++; if (r.status === 'Batched') c.success = (c.success || 0) + 1; }
     for (const r of voided) { const c = getC(r); c.voidCount++; c.voidCents += r.cents; if (r.voidNote && !c.voidNotes.includes(r.voidNote)) c.voidNotes.push(r.voidNote); }
 
     const buyers = [...cust.values()].filter((c) => c.count > 0);
@@ -686,6 +686,13 @@
       series: { gross: s.gross, net, refunds: s.refunds, count: s.count, rolling, pop, hi, lo },
       totals, deltas, retry: Object.assign({}, retry, { looseRecovered }),
       top15, pareto, concentration, perActive, cadence, drifting, momentum, cardStop, rfm, acq, notesApplied,
+      // Every named customer in range (incl. those with only failed / voided attempts),
+      // for the customer explorer's side-by-side table.
+      customers: [...cust.values()].filter((c) => !c.oneTime).map((c) => ({
+        name: c.name, gross: c.gross, count: c.count, firstDay: c.count ? c.firstDay : null, lastDay: c.count ? c.lastDay : null,
+        attempts: c.attempts, success: c.success || 0, failed: c.failed, voidCount: c.voidCount, voidCents: c.voidCents,
+        activePeriods: activeOf.has(c.name) ? activeOf.get(c.name).size : 0,
+      })).sort(byGross),
       risk: { MIN_TX, failureByCustomer, eligibleForFailure, cardMix, reasons: Object.values(reasons).sort((a, b) => b.count - a.count), voidCustomers },
       duplicates, rowsInScope: scope.length, rowsInRange: inRange.length,
       oneTime: oneTimeCust ? { gross: oneTimeCust.gross, count: oneTimeCust.count } : null,
@@ -693,7 +700,7 @@
   }
 
   const api = {
-    analyse, retryChains, buildBuckets, bucketStart, nextStart, autoUnit, slope, quartileScores, segmentOf,
+    analyse, retryChains, buildBuckets, bucketStart, nextStart, autoUnit, slope, quartileScores, segmentOf, makeIndexer,
     TIMEFRAMES, timeframeOf, trackingPeriods, periodIndex, dayRange,
     ymd, dayOf, isoDate, longDate, UNITS, UNIT_LABEL, UNIT_NOUN, ROLLING, SEGMENTS, MONTHS, ONE_TIME, DAY_MS, CARD_STOP_DAYS, CYCLE_DAYS, normName,
   };

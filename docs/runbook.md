@@ -35,13 +35,19 @@ you only load the CSVs once and again after you change them. On a new computer
    |---|---|---|
    | **Needs attention** | still paying by card, recent weeks well below their own baseline | call |
    | **Overdue against their own rhythm** | still a card payer, but late against their usual gap (under 60 days) | call |
-   | **Stopped paying by card** | no card payment for 60+ days (3 months for monthly payers), or your notes say EFT / cheque | if "Why" says *presumed switched · confirm*, find out, then record it in Customer notes |
+   | **Stopped paying by card** | no card payment for 60+ days (3 months for monthly payers), or your notes say EFT / cheque | if "Why" says *presumed switched*, find out, then record it in Customer notes |
    | **Lost customers** | your notes say stopped ordering or closed | nothing; it's the record |
 
-5. When you learn something the export can't show (switched to EFT, closed,
+5. To look at particular customers, switch to the **Customer explorer** tab,
+   open **Select customers** and tick them (or click any customer name in the
+   Overview). Only their figures and charts are shown, side by side. The quick
+   picks (Top 5, Needs attention, Overdue, Stopped paying by card) are a fast way
+   to work through each list.
+6. When you learn something the export can't show (switched to EFT, closed,
    pays monthly, seasonal), add it under **Customer notes** and **save the notes
    file** so the next person gets it too.
-6. **Print / PDF** gives a one-click report for the week.
+7. **Print / PDF** gives a one-click report for the week (of whichever tab is
+   open). The **Light / Dark** switch top right changes the screen theme only.
 
 ## Reading the top of the page
 

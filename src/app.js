@@ -15,6 +15,8 @@
     mapped: null, profiles: new Map(), suggestions: [], members: new Map(),
     // Customer notes: { normalised name: {name, paysBy, cycle, status, since, sinceText, note} }, kept in this browser.
     notes: {},
+    // Customer explorer: which view is showing, and the ticked customers (in tick order).
+    view: 'overview', selected: [], xSort: 'revenue',
   };
 
   // ---------------------------------------------------------------------------
@@ -80,7 +82,9 @@
   const nameCell = (name, oneTime) => {
     const mem = state.members.get(name);
     const note = oneTime ? null : noteOf(name);
-    return [name,
+    // Named customers link to the explorer, showing only that customer.
+    const label = oneTime || !state.rows ? name : el('a', { href: '#', class: 'cust-link', title: 'Open ' + name + ' in the Customer explorer', onclick: (e) => { e.preventDefault(); exploreOnly(name); } }, name);
+    return [label,
       oneTime ? el('span', { class: 'tag agg', title: 'Not a customer: an aggregate of unrelated cards keyed in once', text: 'aggregate †' }) : null,
       mem ? el('span', { class: 'tag grp', title: 'One customer, shown under these names in the export: ' + mem.map(G.display).join(' + '), text: mem.length > 1 ? mem.length + ' names' : 'grouped' }) : null,
       note ? el('span', { class: 'tag note', title: 'Customer note: ' + N.describe(note), text: note.status ? note.status : note.paysBy ? note.paysBy : note.cycle ? note.cycle : 'note' }) : null];
@@ -157,6 +161,7 @@
       preset: 'all', unit: 'auto', status: 'all', segment: null, slopesAll: false, cadenceAll: false,
     });
     refreshGroups();
+    pruneSelection();
     const dMin = parsed.rows[0].day, dMax = parsed.rows[parsed.rows.length - 1].day;
     state.from = dMin; state.to = dMax;
     const t0 = M.ymd(dMin), t1 = M.ymd(dMax);
@@ -209,6 +214,7 @@
     }
     document.querySelectorAll('#dashboard .section').forEach((s) => { s.hidden = false; });
     paint();
+    renderExplorer();
   }
 
   /** Everything that depends on theme colours or the analysis. */
@@ -315,9 +321,9 @@
   // ---------------------------------------------------------------------------
   // B. KPIs
   // ---------------------------------------------------------------------------
-  function renderKPIs(a) {
+  function renderKPIs(a, box) {
     const T = a.totals;
-    const box = clear($('kpis'));
+    box = clear(box || $('kpis'));
     const na = state.status === 'success';
     const tiles = [
       { key: 'gross', hero: true, label: 'Gross revenue', value: F.money(T.gross / 100), up: true,
@@ -912,9 +918,31 @@
     $('cadenceToggle').addEventListener('click', () => { state.cadenceAll = !state.cadenceAll; renderCustomers(state.analysis, C.theme()); });
     $('printBtn').addEventListener('click', () => window.print());
 
-    // Theme changes repaint the canvases (their colours are baked in).
-    const dark = window.matchMedia('(prefers-color-scheme: dark)');
-    (dark.addEventListener ? dark.addEventListener.bind(dark, 'change') : dark.addListener.bind(dark))(() => { if (!printing) paint(); });
+    // Light / Dark switch. Light is the default; the choice is remembered in this browser.
+    $('themeSwitch').addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-theme-value]');
+      if (!b || printing) return;
+      applyTheme(b.dataset.themeValue, true);
+      if (state.analysis && !state.analysis.empty) { paint(); renderExplorer(); }
+    });
+    $('themeSwitch').addEventListener('keydown', (e) => {
+      if (!['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+      e.preventDefault();
+      applyTheme(theme === 'dark' ? 'light' : 'dark', true);
+      $('themeSwitch').querySelector('[aria-checked="true"]').focus();
+      if (state.analysis && !state.analysis.empty) { paint(); renderExplorer(); }
+    });
+
+    // Tabs: Overview / Customer explorer.
+    $('tab-overview').addEventListener('click', () => showView('overview'));
+    $('tab-explorer').addEventListener('click', () => showView('explorer'));
+    document.querySelector('.tabs').addEventListener('keydown', (e) => {
+      if (!['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+      e.preventDefault();
+      showView(state.view === 'overview' ? 'explorer' : 'overview');
+      $('tab-' + state.view).focus();
+    });
+    bindExplorer();
 
     // Print: force light theme + print width, redraw crisp canvases, restore after.
     let printing = false;
@@ -926,6 +954,8 @@
       $('dq').dataset.wasOpen = $('dq').open ? '1' : '';
       window.__ccPrintDPR = 2;
       paint();
+      renderExplorer();
+      if (state.view === 'explorer' && state.selected.length) $('printSummary').textContent += ' · Customer explorer: ' + state.selected.join(', ');
       // Freeze each chart as an image so it scales cleanly to any paper width.
       Object.entries(C.registry).forEach(([id, chart]) => {
         const canvas = chart.canvas;
@@ -937,11 +967,13 @@
     const exit = () => {
       if (!printing) return;
       printing = false;
-      delete document.documentElement.dataset.theme;
+      applyTheme(theme, false);
       document.body.classList.remove('printing');
       window.__ccPrintDPR = 0;
       document.querySelectorAll('.print-img').forEach((n) => n.remove());
       paint();
+      renderExplorer();
+      if (state.analysis && !state.analysis.empty) renderMeta(state.analysis);
     };
     window.addEventListener('beforeprint', enter);
     window.addEventListener('afterprint', exit);
@@ -974,6 +1006,10 @@
         stopped: a.cardStop.stopped.map((x) => ({ name: x.name, lastDay: M.isoDate(x.lastDay), gross: x.gross, declared: !!x.declared })),
         lost: a.cardStop.lost.map((x) => ({ name: x.name, status: x.status, since: x.sinceText || '' })), seasonalOff: a.cardStop.seasonal.map((x) => x.name),
         notes: { loaded: Object.keys(state.notes).length, applied: a.notesApplied, monthlySkipped: a.momentum.monthlySkipped },
+        theme: document.documentElement.dataset.theme || 'light', view: state.view,
+        explorer: { selected: state.selected.slice(), gross: state.explorer && !state.explorer.empty && state.selected.length ? state.explorer.totals.gross : null,
+          count: state.explorer && !state.explorer.empty && state.selected.length ? state.explorer.totals.count : null,
+          failed: state.explorer && !state.explorer.empty && state.selected.length ? state.explorer.retry.failedTotal : null },
         backOnCard: a.cardStop.back.map((x) => ({ name: x.name, offFrom: M.isoDate(x.offFrom), backOn: M.isoDate(x.backOn) })),
         late: a.drifting.map((x) => x.name), cadence: Object.fromEntries(a.cadence.map((x) => [x.name, x.avgGap])),
         attentionDetail: a.momentum.attention.map((x) => ({ name: x.name, baseAvg: x.baseAvg, recentAvg: x.recentAvg })),
@@ -1253,6 +1289,319 @@
     updateNotesBadge();
   }
 
+  // ---------------------------------------------------------------------------
+  // Theme: light by default, navy dark on request (remembered in this browser)
+  // ---------------------------------------------------------------------------
+  const THEME_KEY = 'ccdash.theme.v1';
+  let theme = 'light';
+  function applyTheme(value, remember) {
+    theme = value === 'dark' ? 'dark' : 'light';
+    if (theme === 'dark') document.documentElement.dataset.theme = 'dark';
+    else delete document.documentElement.dataset.theme;
+    document.querySelectorAll('#themeSwitch button').forEach((b) => {
+      const on = b.dataset.themeValue === theme;
+      b.setAttribute('aria-checked', String(on));
+      b.tabIndex = on ? 0 : -1;
+    });
+    if (remember) { try { window.localStorage.setItem(THEME_KEY, theme); } catch (e) { /* private window: not remembered */ } }
+  }
+  function loadTheme() {
+    let v = 'light';
+    try { v = window.localStorage.getItem(THEME_KEY) || 'light'; } catch (e) { /* default */ }
+    applyTheme(v, false);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Customer explorer: tick customers, see only their metrics and charts
+  // ---------------------------------------------------------------------------
+  const X_CHARTS = ['xRevenue', 'xPayments', 'xShare'];
+  const MAX_LINES = 7;  // customers drawn individually; the rest share one "other" series
+
+  function showView(view) {
+    state.view = view === 'explorer' ? 'explorer' : 'overview';
+    const ex = state.view === 'explorer';
+    $('view-overview').hidden = ex;
+    $('view-explorer').hidden = !ex;
+    $('tab-overview').setAttribute('aria-selected', String(!ex));
+    $('tab-explorer').setAttribute('aria-selected', String(ex));
+    $('tab-overview').tabIndex = ex ? -1 : 0;
+    $('tab-explorer').tabIndex = ex ? 0 : -1;
+    if (!state.analysis || state.analysis.empty) return;
+    if (ex) renderExplorer(); else { closePicker(); paint(); }
+  }
+  function exploreOnly(name) {
+    state.selected = [name];
+    showView('explorer');
+    window.scrollTo(0, 0);
+  }
+  /** Customer names in the loaded file (after groups), named customers only. */
+  function allCustomerNames() {
+    const set = new Set();
+    for (const r of state.mapped || state.rows || []) if (!r.oneTime) set.add(r.customer);
+    return set;
+  }
+  function pruneSelection() {
+    const names = allCustomerNames();
+    state.selected = state.selected.filter((n) => names.has(n));
+  }
+  const colorOf = (t) => { const pal = C.custColors(t); return (name) => { const i = state.selected.indexOf(name); return i >= 0 && i < MAX_LINES ? pal[i] : pal[pal.length - 1]; }; };
+
+  /** Picker options: every named customer in the file, with in-range revenue. */
+  function pickerOptions() {
+    const a = state.analysis;
+    const inRange = new Map((a && a.customers || []).map((c) => [c.name, c]));
+    const opts = [...allCustomerNames()].map((name) => ({ name, gross: inRange.has(name) ? inRange.get(name).gross : 0 }));
+    return state.xSort === 'name' ? opts.sort((x, y) => x.name.localeCompare(y.name)) : opts.sort((x, y) => y.gross - x.gross || x.name.localeCompare(y.name));
+  }
+  function renderPickerList() {
+    const q = $('xSearch').value.trim().toLowerCase();
+    const list = clear($('xList'));
+    const opts = pickerOptions().filter((o) => !q || o.name.toLowerCase().includes(q));
+    opts.forEach((o) => {
+      const checked = state.selected.includes(o.name);
+      const cb = el('input', { type: 'checkbox', value: o.name, 'aria-label': o.name });
+      cb.checked = checked;
+      const note = noteOf(o.name);
+      list.append(el('label', { class: 'x-opt' + (checked ? ' checked' : ''), role: 'option', 'aria-selected': String(checked) },
+        cb, el('span', { class: 'nm', text: o.name, title: o.name }),
+        note ? el('span', { class: 'tag note', text: note.status || note.paysBy || note.cycle || 'note' }) : el('span'),
+        el('span', { class: 'num', text: o.gross ? F.money(o.gross / 100) : 'no sales in period' })));
+    });
+    if (!opts.length) list.append(el('p', { class: 'grp-empty', style: 'padding: 10px 14px', text: 'No customer name contains “' + q + '”.' }));
+    $('xShownCount').textContent = opts.length + ' shown · ' + state.selected.length + ' ticked';
+    list.dataset.shown = JSON.stringify(opts.map((o) => o.name));
+  }
+  function openPicker() {
+    $('xPanel').hidden = false;
+    $('xPickerBtn').setAttribute('aria-expanded', 'true');
+    $('xSort').value = state.xSort;
+    renderPickerList();
+    $('xSearch').focus();
+  }
+  function closePicker() {
+    if ($('xPanel').hidden) return;
+    $('xPanel').hidden = true;
+    $('xPickerBtn').setAttribute('aria-expanded', 'false');
+  }
+  function setSelected(names) {
+    state.selected = names;
+    renderExplorer();
+    if (!$('xPanel').hidden) renderPickerList();
+  }
+  function bindExplorer() {
+    $('xPickerBtn').addEventListener('click', () => ($('xPanel').hidden ? openPicker() : closePicker()));
+    $('xSearch').addEventListener('input', renderPickerList);
+    $('xSort').addEventListener('change', (e) => { state.xSort = e.target.value; renderPickerList(); });
+    $('xList').addEventListener('change', (e) => {
+      const cb = e.target;
+      if (cb.type !== 'checkbox') return;
+      const name = cb.value;
+      const next = cb.checked ? state.selected.concat(state.selected.includes(name) ? [] : [name]) : state.selected.filter((n) => n !== name);
+      cb.closest('.x-opt').classList.toggle('checked', cb.checked);
+      cb.closest('.x-opt').setAttribute('aria-selected', String(cb.checked));
+      state.selected = next;
+      $('xShownCount').textContent = JSON.parse($('xList').dataset.shown || '[]').length + ' shown · ' + next.length + ' ticked';
+      renderExplorer();
+    });
+    $('xSelectShown').addEventListener('click', () => {
+      const shown = JSON.parse($('xList').dataset.shown || '[]');
+      setSelected(state.selected.concat(shown.filter((n) => !state.selected.includes(n))));
+    });
+    $('xClear').addEventListener('click', () => setSelected([]));
+    document.addEventListener('mousedown', (e) => { if (!$('xPicker').contains(e.target)) closePicker(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('xPanel').hidden) { closePicker(); $('xPickerBtn').focus(); } });
+  }
+
+  /** Status pills for one customer, from the same lists the Overview shows. */
+  function statusPills(name, a) {
+    const has = (list) => list.some((x) => x.name === name);
+    const out = [];
+    const lost = a.cardStop.lost.find((x) => x.name === name);
+    if (lost) out.push(['bad', lost.status === 'closed' ? 'Closed' : 'Lost', 'Your notes: ' + lost.status + (lost.sinceText ? ' since ' + lost.sinceText : '')]);
+    const st = a.cardStop.stopped.find((x) => x.name === name);
+    if (st) out.push(['warn', 'Stopped paying by card', (st.why || 'No card payment for ' + a.cardStop.days + '+ days') + ' · last card payment ' + fmtDay(st.lastDay)]);
+    if (has(a.cardStop.seasonal)) out.push(['mute', 'Off season', 'Seasonal customer, no card payment for ' + a.cardStop.days + '+ days']);
+    if (has(a.momentum.attention)) out.push(['bad', 'Needs attention', 'Recent spending at least ' + Math.round(a.threshold * 100) + '% below their baseline']);
+    if (has(a.drifting)) out.push(['warn', 'Overdue', 'At least twice their usual gap since the last card payment']);
+    const back = a.cardStop.back.find((x) => x.name === name);
+    if (back) out.push(['info', 'Back on card', 'Off card ' + fmtDay(back.offFrom) + ' – ' + fmtDay(back.backOn)]);
+    if (!out.length) out.push(['ok', 'Active', 'Paying by card, nothing flagged']);
+    return out.map(([cls, text, title]) => el('span', { class: 'status-pill ' + cls, text, title }));
+  }
+
+  function renderExplorer() {
+    const a = state.analysis;
+    const n = state.selected.length;
+    $('explorerCount').hidden = !n;
+    $('explorerCount').textContent = String(n);
+    $('xPickerText').textContent = !n ? 'Select customers' : n === 1 ? state.selected[0] : n + ' customers selected';
+    if (state.view !== 'explorer' || !a || a.empty) return;
+    const t = C.theme();
+    C.configure(t);
+    const color = colorOf(t);
+
+    // Ticked customers as removable chips.
+    const chips = clear($('xChips'));
+    state.selected.forEach((name, i) => {
+      chips.append(el('span', { class: 'x-chip', style: '--chip: ' + color(name) }, el('span', { class: 'dot' }), el('span', { text: name }),
+        el('button', { type: 'button', title: 'Remove ' + name, 'aria-label': 'Remove ' + name, text: '×', onclick: () => setSelected(state.selected.filter((x) => x !== name)) })));
+      if (i === MAX_LINES - 1 && n > MAX_LINES) chips.append(el('span', { class: 'mut', style: 'font-size:12px', text: 'Charts draw the first ' + MAX_LINES + ' individually and the rest as one grey line.' }));
+    });
+
+    const box = clear($('xContent'));
+    X_CHARTS.forEach((id) => C.destroy(id));
+    if (!n) {
+      const top = a.customers.filter((c) => c.count > 0);
+      const quick = (label, names) => (names.length ? el('button', { type: 'button', class: 'btn small', onclick: () => setSelected(names) }, label + ' (' + names.length + ')') : null);
+      box.append(el('div', { class: 'x-empty' },
+        el('h3', { text: 'Pick the customers to look at' }),
+        el('p', { text: 'Open “Select customers” and tick one customer to see only their metrics and charts, or tick several to compare them side by side. The period, grouping and status filters above apply here too. Any customer name in the Overview tables also opens here.' }),
+        el('div', { class: 'x-panel-actions' },
+          quick('Top 5 by revenue', top.slice(0, 5).map((c) => c.name)),
+          quick('Needs attention', a.momentum.attention.map((x) => x.name)),
+          quick('Overdue', a.drifting.map((x) => x.name)),
+          quick('Stopped paying by card', a.cardStop.stopped.map((x) => x.name)),
+          el('button', { type: 'button', class: 'btn small primary', onclick: openPicker }, 'Select customers…'))));
+      return;
+    }
+
+    // Analyse only the ticked customers' rows, with the same filters as the Overview.
+    const set = new Set(state.selected);
+    const rows = (state.mapped || state.rows).filter((r) => !r.oneTime && set.has(r.customer));
+    const xa = rows.length ? M.analyse(rows, { from: state.from, to: state.to, unit: state.unit, status: state.status, threshold: state.threshold, notes: state.notes }) : { empty: true };
+    state.explorer = xa;
+    const share = a.totals.gross ? (xa.empty ? 0 : xa.totals.gross) / a.totals.gross : 0;
+    const noun = M.UNIT_NOUN[a.unit];
+
+    box.append(el('p', { class: 'x-lede' }, n === 1 ? 'Showing only ' : 'Showing only these ' + n + ' customers: ',
+      n === 1 ? el('strong', { text: state.selected[0] }) : null,
+      n === 1 ? ', ' : '', el('strong', { text: F.pct(share) }), ' of all revenue in ' + fmtDay(a.from) + ' – ' + fmtDay(a.to) + '.'));
+    if (xa.empty) {
+      box.append(el('div', { class: 'x-empty' }, el('h3', { text: 'No activity in this period' }), el('p', { text: 'The ticked customers have no transactions between ' + fmtDay(a.from) + ' and ' + fmtDay(a.to) + '. Widen the period above.' })));
+      return;
+    }
+    const kpis = el('section', { class: 'kpis', id: 'xKpis', 'aria-label': 'Key figures for the ticked customers' });
+    box.append(kpis);
+    renderKPIs(xa, kpis);
+
+    // Per-period revenue, one series per customer (the rest combined).
+    const idx = M.makeIndexer(xa.buckets);
+    const sales = rows.filter((r) => r.status === 'Batched' && r.cents > 0 && r.day >= xa.from && r.day <= xa.to);
+    const zeros = () => new Array(xa.buckets.length).fill(0);
+    const lines = state.selected.slice(0, MAX_LINES).map((name) => ({ name, color: color(name), data: zeros() }));
+    const other = n > MAX_LINES ? { name: 'Other ticked customers (' + (n - MAX_LINES) + ')', color: color(null), data: zeros(), other: true } : null;
+    const lineOf = new Map(lines.map((l) => [l.name, l]));
+    for (const r of sales) (lineOf.get(r.customer) || other).data[idx(r.day)] += r.cents;
+
+    const grid = el('div', { class: 'grid' });
+    box.append(grid);
+    const chartCard = (id, title, sub, cls, height) => {
+      const canvas = el('canvas', { id: 'c-' + id, role: 'img' });
+      const cbox = el('div', { class: 'chart-box', id: 'box-' + id, style: height ? 'height:' + height + 'px' : null }, canvas);
+      const cap = el('p', { class: 'caption', id: 'cap-' + id });
+      grid.append(el('article', { class: 'card ' + (cls || ''), 'data-chart': id },
+        el('header', { class: 'card-head' }, el('div', null, el('h3', { text: title }), el('p', { class: 'card-sub', text: sub }))), cbox, cap));
+      return { box: cbox, cap };
+    };
+    const rev = chartCard('xRevenue', 'Revenue per ' + noun + (n > 1 ? ' by customer' : ''), 'Gross revenue from successful charges' + (n > 1 ? ', one line per ticked customer' : '') + ' · * = partial ' + noun, 'span-2');
+    C.xRevenue(xa.buckets, other ? lines.concat(other) : lines, t, noun);
+    const best = lines.map((l) => ({ l, total: l.data.reduce((x, y) => x + y, 0) })).sort((x, y) => y.total - x.total)[0];
+    rev.cap.textContent = n === 1 ? 'Each bar is one ' + noun + '’s revenue from this customer. Gaps are ' + noun + 's with no successful card payment.'
+      : 'Lines that move together are customers on the same ordering rhythm; a line that drops to zero and stays there has stopped paying by card. Biggest in this period: ' + best.l.name + ' (' + F.money(best.total / 100) + ').';
+
+    // Every payment attempt as a dot.
+    const inR = rows.filter((r) => r.day >= xa.from && r.day <= xa.to && r.cents >= 0 && (state.status !== 'success' || r.status === 'Batched'));
+    const pts = inR.map((r) => ({ x: r.day, y: r.cents / 100, customer: r.customer, status: r.status, reason: r.reason || r.voidNote || '',
+      series: lineOf.has(r.customer) ? r.customer : other ? other.name : r.customer }));
+    const pay = chartCard('xPayments', 'Every payment', 'Each dot is one charge: date across, amount up · ✕ = failed, hollow = voided', 'span-2', 300);
+    C.xPayments(pts, other ? lines.concat(other) : lines, xa.from, xa.to, t);
+    const failedN = inR.filter((r) => r.status === 'Failed').length;
+    pay.cap.textContent = 'Regular dots at the same height are a standing order; a widening gap between dots is a customer slowing down. ' +
+      plural(inR.filter((r) => r.status === 'Batched').length, 'successful charge') + (state.status === 'success' ? '' : ', ' + plural(failedN, 'failed charge') + ', ' + plural(inR.filter((r) => r.status === 'Voided').length, 'void')) + ' in this period.';
+
+    // Share of the selection (2+ customers).
+    const stats = new Map(a.customers.map((c) => [c.name, c]));
+    if (n > 1) {
+      const items = state.selected.map((name) => ({ name, gross: (stats.get(name) || { gross: 0 }).gross })).sort((x, y) => y.gross - x.gross);
+      const tot = items.reduce((x, y) => x + y.gross, 0);
+      const sh = chartCard('xShare', 'Share of the ticked customers’ revenue', 'Gross revenue in this period', '');
+      C.hbar('xShare', items, t, { box: sh.box, label: 'Revenue', value: (x) => x.gross / 100, color: t.accent, tick: (v) => F.compact(v), axis: 'Revenue',
+        tooltip: (x) => ' ' + F.money(x.gross / 100) + ' · ' + F.pct(tot ? x.gross / tot : 0) + ' of the ticked customers', labelFmt: (v, x) => F.compact(v) + ' · ' + F.pct(tot ? x.gross / tot : 0, 0), aria: 'Bar chart of revenue per ticked customer' });
+      const chart = C.registry.xShare;
+      chart.data.datasets[0].backgroundColor = items.map((x) => color(x.name));
+      chart.update();
+      sh.cap.textContent = items[0].name + ' brings in ' + F.pct(tot ? items[0].gross / tot : 0) + ' of what these ' + n + ' customers paid by card.';
+    }
+
+    // Card types for the selection.
+    const cards = xa.risk.cardMix.filter((c) => c.cents > 0);
+    if (cards.length) {
+      const cm = el('article', { class: 'card' + (n > 1 ? '' : ' span-2') },
+        el('header', { class: 'card-head' }, el('div', null, el('h3', { text: 'Cards used' }), el('p', { class: 'card-sub', text: 'Revenue and failure rate by card type, ticked customers only' }))));
+      cm.append(table([
+        { key: 'card', label: 'Card', fmt: (r) => [el('span', { class: 'swatch', style: 'background:' + C.cardColor(r.card, t) }), r.card] },
+        { key: 'cents', label: 'Revenue', num: true, fmt: (r) => F.money(r.cents / 100) },
+        { key: 'count', label: 'Payments', num: true },
+        { key: 'rate', label: 'Failed', num: true, fmt: (r) => state.status === 'success' ? 'n/a' : r.failed + ' of ' + r.attempts + ' (' + F.pct(r.attempts ? r.failed / r.attempts : 0) + ')', sort: (r) => (r.attempts ? r.failed / r.attempts : 0) },
+      ], cards, { sort: { key: 'cents', dir: -1 } }));
+      grid.append(cm);
+    }
+
+    // Side by side.
+    const slope = new Map(a.momentum.slopes.map((x) => [x.name, x.slope]));
+    const gap = new Map(a.cadence.map((x) => [x.name, x]));
+    const seg = new Map(a.rfm ? a.rfm.members.map((x) => [x.name, x.segment]) : []);
+    const perNoun = a.perActiveNoun;
+    const rowsT = state.selected.map((name) => {
+      const c = stats.get(name) || { name, gross: 0, count: 0, attempts: 0, success: 0, failed: 0, voidCount: 0, voidCents: 0, activePeriods: 0, firstDay: null, lastDay: null };
+      return Object.assign({}, c, { share: a.totals.gross ? c.gross / a.totals.gross : 0, avg: c.count ? c.gross / c.count : null, perActive: c.activePeriods ? c.gross / c.activePeriods : null,
+        since: c.lastDay == null ? null : a.to - c.lastDay, gap: gap.has(name) ? gap.get(name).avgGap : null, declared: gap.has(name) ? gap.get(name).declared : null,
+        slope: slope.has(name) ? slope.get(name) : null, rate: c.attempts ? c.success / c.attempts : null, segment: seg.get(name) || null });
+    });
+    const na = state.status === 'success';
+    const side = el('article', { class: 'card span-2' },
+      el('header', { class: 'card-head' }, el('div', null, el('h3', { text: n === 1 ? 'Customer profile' : 'Side by side' }),
+        el('p', { class: 'card-sub', text: 'Every figure for the period above; status comes from the same lists as the Overview, including your customer notes. Click a column to sort.' }))),
+      el('div', { class: 'table-wrap' }, table([
+        { key: 'name', label: 'Customer', name: true, fmt: (r) => [el('span', { class: 'swatch', style: 'background:' + color(r.name) })].concat(nameCell(r.name)) },
+        { key: 'status', label: 'Status', fmt: (r) => statusPills(r.name, a), sort: (r) => statusPills(r.name, a).map((p) => p.textContent).join() },
+        { key: 'gross', label: 'Revenue', num: true, fmt: (r) => F.money(r.gross / 100) },
+        { key: 'share', label: 'Share', num: true, fmt: (r) => F.pct(r.share) },
+        { key: 'count', label: 'Payments', num: true },
+        { key: 'avg', label: 'Avg', num: true, fmt: (r) => (r.avg == null ? '—' : F.money(r.avg / 100)), sort: (r) => r.avg || 0 },
+        { key: 'perActive', label: 'Per active ' + (perNoun === 'month' ? 'mo' : 'wk'), num: true, fmt: (r) => (r.perActive == null ? '—' : F.money(r.perActive / 100)), sort: (r) => r.perActive || 0 },
+        { key: 'lastDay', label: 'Last paid', num: true, fmt: (r) => (r.lastDay == null ? 'none in period' : fmtDay(r.lastDay)), sort: (r) => r.lastDay || 0 },
+        { key: 'since', label: 'Days', num: true, fmt: (r) => (r.since == null ? '—' : F.int(r.since)), sort: (r) => (r.since == null ? Infinity : r.since) },
+        { key: 'gap', label: 'Usual gap', num: true, fmt: (r) => (r.gap == null ? '—' : r.gap.toFixed(1) + ' d' + (r.declared ? ' (' + r.declared + ')' : '')), sort: (r) => r.gap || 0 },
+        { key: 'slope', label: 'Trend /' + (a.momentum.periodNoun === 'month' ? 'mo' : 'wk'), num: true, fmt: (r) => (r.slope == null ? '—' : el('span', { class: r.slope >= 0 ? 'pos' : 'neg', text: (r.slope >= 0 ? '▲ ' : '▼ ') + F.signedMoney(r.slope) })), sort: (r) => (r.slope == null ? -Infinity : r.slope) },
+        { key: 'rate', label: 'Success', num: true, fmt: (r) => (na || r.rate == null ? '—' : F.pct(r.rate)), sort: (r) => r.rate || 0 },
+        { key: 'failed', label: 'Failed', num: true, fmt: (r) => (na ? '—' : F.int(r.failed)) },
+        { key: 'voidCents', label: 'Voided', num: true, fmt: (r) => (na ? '—' : F.money(r.voidCents / 100)) },
+        { key: 'segment', label: 'Segment', fmt: (r) => r.segment || '—', sort: (r) => r.segment || '' },
+      ], rowsT, { sort: { key: 'gross', dir: -1 } })));
+    side.querySelector('table').classList.add('compact');
+    grid.append(side);
+
+    // Failed and voided charges, newest first.
+    if (!na) {
+      const recovered = new Map();
+      xa.retry.chains.forEach((ch) => ch.failures.forEach((f) => recovered.set(f, ch.successDay)));
+      const probs = inR.filter((r) => r.status !== 'Batched').sort((x, y) => y.day - x.day || y.second - x.second);
+      grid.append(el('article', { class: 'card span-2' },
+        el('header', { class: 'card-head' }, el('div', null, el('h3', { text: 'Failed and voided charges' }), el('p', { class: 'card-sub', text: 'Newest first · “Recovered” = the same amount on the same card went through later' }))),
+        el('div', { class: 'table-wrap scroll mid' }, table([
+          { key: 'day', label: 'Date', num: true, fmt: (r) => fmtDay(r.day) },
+          { key: 'customer', label: 'Customer', name: true, fmt: (r) => r.customer },
+          { key: 'cents', label: 'Amount', num: true, fmt: (r) => F.money(r.cents / 100) },
+          { key: 'card', label: 'Card' },
+          { key: 'status', label: 'Status', fmt: (r) => el('span', { class: 'status-pill ' + (r.status === 'Failed' ? 'bad' : 'mute'), text: r.status }) },
+          { key: 'reason', label: 'Reason / void note', fmt: (r) => el('span', { class: 'why', text: r.reason || r.voidNote || '' }), sort: (r) => r.reason || r.voidNote || '' },
+          { key: 'rec', label: 'Recovered', fmt: (r) => (r.status !== 'Failed' ? '' : recovered.has(r) ? el('span', { class: 'pos', text: '✓ ' + fmtDay(recovered.get(r)) }) : el('span', { class: 'neg', text: 'no' })), sort: (r) => (recovered.has(r) ? 1 : 0) },
+        ], probs, { empty: 'No failed or voided charges for these customers in this period.', good: true }))));
+    }
+  }
+
+  loadTheme();
   loadStore();
   bindGroups();
   bindNotes();
