@@ -5,12 +5,13 @@ runs in a desktop browser; the data never leaves the computer.
 
 ## What lives where
 
-Keep these three files together in one folder (a shared drive is fine, but the
-two CSVs contain customer names, so not a public one):
+Keep these together in one folder (a shared drive is fine, but the CSVs contain
+customer names and payments, so not a public one):
 
 | File | What it is | Who changes it |
 |---|---|---|
 | `dashboard.html` | the dashboard, one file | replaced when a new build is released |
+| `exports/` | every card-processor export, one CSV per stretch of up to 90 days, never edited | you, one new file each week |
 | `customer-groups.csv` | export names that are one customer on several cards | you, through **Customer groups** → *Save groups file* |
 | `customer-notes.csv` | what the export can't show: who pays by EFT or cheque, who pays monthly or seasonally, who stopped ordering | you, in Excel or through **Customer notes** → *Save notes file* |
 
@@ -18,14 +19,29 @@ The browser remembers the groups and notes you loaded, so on the same computer
 you only load the CSVs once and again after you change them. On a new computer
 (or after clearing browser data) load both files again.
 
+## Building the history (once)
+
+The processor exports at most 90 days per file, so a year of history is several
+files. The dashboard combines them:
+
+- Export consecutive stretches of **up to 90 days**, each **starting on the last
+  day of the one before** (overlap by a day). A transaction that appears in two
+  files is counted once, so overlaps are harmless; gaps are not.
+- Name each file by its dates, for example `2025-11-28_to_2026-01-02.csv`, and
+  keep it in `exports/` as downloaded. Don't open and re-save it in Excel: Excel
+  rewrites dates and reference numbers.
+- When loaded, the dashboard lists every file with its dates, says how many rows
+  were repeated across files, and warns about any stretch of 7+ days with no
+  transactions at all, which usually means a missing file.
+
 ## Each week
 
-1. **Export** the transactions from the card processor as CSV, from **1 January
-   of last year to today**. A long range is better than a short one: the
-   dashboard adapts its comparisons to the length, and a year or more unlocks
-   the year-over-year view and the "same month last year" baselines.
-2. **Open** `dashboard.html` in Chrome or Edge (double-click it) and **drop the
-   CSV** onto the page.
+1. **Export** the days since your last export (start on the last day of the
+   previous file) as CSV and save it in `exports/`.
+2. **Open** `dashboard.html` in Chrome or Edge (double-click it), select **all
+   the files in `exports/`** and drop them onto the page together (or click the
+   page and pick them all). Already open? **Add files…** adds the new one.
+   Check the blue "files combined" notice and that there is no gap warning.
 3. If the top-right buttons don't show a count badge, **load**
    `customer-groups.csv` (Customer groups → *Load groups file…*) and
    `customer-notes.csv` (Customer notes → *Load notes file…*).
@@ -64,8 +80,14 @@ say so instead of guessing.
   Customer notes → *Pays by* EFT or cheque, with the month, save the notes file.
 - **Someone is flagged who pays monthly or seasonally**: Customer notes →
   *Cycle* monthly or seasonal.
-- **The file won't load**: the message names the problem (a missing column,
-  US-style dates, an Excel workbook saved as `.xlsx`). Re-export as CSV.
+- **The file won't load**: the message names the problem and the file (a
+  missing column, US-style dates, an Excel workbook saved as `.xlsx`).
+  Re-export that one as CSV.
+- **"No transactions at all between … and …"**: a stretch is missing from the
+  files loaded. Export it (overlapping a day on each side) and add it.
+- **"… both cover … but only N of their rows match"**: two overlapping files
+  disagree, usually because one is from a different account or was re-saved in
+  Excel. Re-export the overlap from the processor.
 - **A new customer looks "new" but isn't**: the export only shows card payments,
   so a first card payment can be an existing account moving from EFT. The chart
   says "started paying by card" for that reason.

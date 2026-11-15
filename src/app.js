@@ -3,11 +3,13 @@
 (function () {
   'use strict';
 
-  const P = window.CCParse, M = window.CCMetrics, C = window.CCCharts, F = window.CCFormat, G = window.CCGroups, N = window.CCNotes;
+  const P = window.CCParse, M = window.CCMetrics, C = window.CCCharts, F = window.CCFormat, G = window.CCGroups, N = window.CCNotes, X = window.CCCombine;
   const $ = (id) => document.getElementById(id);
 
   const state = {
     rows: null, quality: null, fileName: '', fileSize: 0,
+    // Every export loaded (the processor caps each at 90 days), parsed separately, then combined.
+    files: [], coverage: null, loadWarning: '',
     from: null, to: null, preset: 'all', unit: 'auto', status: 'all', threshold: 0.25,
     slopesAll: false, cadenceAll: false, segment: null, analysis: null,
     // Customer groups: { "label in export": "customer it belongs to" }, kept in this browser.
@@ -147,22 +149,32 @@
   // ---------------------------------------------------------------------------
   // Loading
   // ---------------------------------------------------------------------------
-  async function loadFile(file) {
-    if (!file) return;
-    let text;
-    try { text = await file.text(); }
-    catch (e) { return showError('The file could not be opened by the browser.', String(e && e.message || e)); }
-    let parsed;
-    try { parsed = P.parseTransactions(text, { fileName: file.name }); }
-    catch (e) { return showError(e.message, e.detail || ''); }
+  /** Load one or more exports. append = add them to the files already loaded. */
+  async function loadFiles(fileList, append) {
+    const list = Array.from(fileList || []).filter(Boolean);
+    if (!list.length) return;
+    const parsedFiles = [];
+    for (const file of list) {
+      let text;
+      try { text = await file.text(); }
+      catch (e) { return failLoad(append, (list.length > 1 || append ? file.name + ': ' : '') + 'the file could not be opened by the browser.', String(e && e.message || e)); }
+      try { parsedFiles.push(Object.assign(P.parseTransactions(text, { fileName: file.name }), { name: file.name, size: file.size })); }
+      catch (e) { return failLoad(append, (list.length > 1 || append ? file.name + ': ' : '') + e.message, e.detail || ''); }
+    }
+    const files = (append ? state.files : []).concat(parsedFiles);
+    const combined = X.combine(files);
+    const newNames = new Set(parsedFiles.map((p) => p.name.replace(/^.*[\\/]/, '')));
+    const added = append ? combined.files.filter((f) => newNames.has(f.name)).reduce((n, f) => n + f.kept, 0) : null;
+    state.loadWarning = append && added === 0 ? 'The added file' + (list.length > 1 ? 's' : '') + ' contained nothing new: every row was already in the files loaded.' : '';
 
     Object.assign(state, {
-      rows: parsed.rows, quality: parsed.quality, fileName: file.name, fileSize: file.size,
+      files, rows: combined.rows, quality: combined.quality, coverage: combined,
+      fileName: files.length === 1 ? files[0].name : files.length + ' files', fileSize: files.reduce((n, f) => n + (f.size || 0), 0),
       preset: 'all', unit: 'auto', status: 'all', segment: null, slopesAll: false, cadenceAll: false,
     });
     refreshGroups();
     pruneSelection();
-    const dMin = parsed.rows[0].day, dMax = parsed.rows[parsed.rows.length - 1].day;
+    const dMin = state.rows[0].day, dMax = state.rows[state.rows.length - 1].day;
     state.from = dMin; state.to = dMax;
     const t0 = M.ymd(dMin), t1 = M.ymd(dMax);
     state.minAllowed = M.dayOf(t0.y, t0.m, 1);
@@ -178,6 +190,15 @@
     $('app').dataset.state = 'ready';
     render();
     window.scrollTo(0, 0);
+  }
+
+  function failLoad(append, message, detail) {
+    if (append && state.rows) {      // keep what is loaded; say what went wrong
+      state.loadWarning = 'Nothing was added. ' + message + (detail ? ' ' + detail : '');
+      render();
+      return;
+    }
+    showError(message, detail);
   }
 
   function showError(message, detail) {
@@ -248,7 +269,7 @@
     const q = state.quality;
     const rows = state.rows;
     $('metaFile').textContent = state.fileName;
-    $('metaFile').title = state.fileName;
+    $('metaFile').title = state.files.map((f) => f.name).join('\n') || state.fileName;
     $('metaRange').textContent = fmtDay(rows[0].day) + ' – ' + fmtDay(rows[rows.length - 1].day) + ' (' + plural(rows[rows.length - 1].day - rows[0].day + 1, 'day') + ')';
     $('metaRows').textContent = F.int(q.parsed) + (q.totalDataRows !== q.parsed ? ' of ' + F.int(q.totalDataRows) : '');
     const cur = Object.keys(q.currencies);
@@ -276,7 +297,7 @@
       : 'it is too short to tell who started paying by card (some regulars only pay monthly)';
     const stop = a.cardStop.known ? 'customers with no card payment in the last ' + a.cardStop.days + ' days are recorded as having stopped paying by card'
       : 'it is too short to tell who stopped paying by card (that takes ' + a.cardStop.days + ' days without a card payment)';
-    return 'This export covers ' + days + ' (' + tf.label + '), so ' + cmp + '; ' + track + '; ' + fresh + '; and ' + stop + '. Charts are grouped by ' + a.unit + '.';
+    return (state.files.length > 1 ? 'These ' + state.files.length + ' exports cover ' : 'This export covers ') + days + ' (' + tf.label + '), so ' + cmp + '; ' + track + '; ' + fresh + '; and ' + stop + '. Charts are grouped by ' + a.unit + '.';
   }
 
   function renderNotices(a) {
@@ -302,15 +323,28 @@
       box.append(notice('info', plural(pend.length, 'set') + ' of customer names look like one customer on several cards (' + eg + (pend.length > 3 ? ', …' : '') + '). Until they are grouped, each name counts as a separate customer.',
         { label: 'Review customer groups', onclick: openGroups }));
     }
+    if (state.loadWarning) box.append(notice('warn', state.loadWarning));
+    const cov = state.coverage;
+    if (cov && cov.files.length > 1) {
+      const dup = cov.files.reduce((n, f) => n + f.duplicates, 0);
+      box.append(notice('info', plural(cov.files.length, 'file') + ' combined: ' + cov.files.map((f) => f.name + ' (' + (f.from == null ? 'empty' : fmtDay(f.from) + ' – ' + fmtDay(f.to)) + ', ' + F.int(f.rows) + ' rows)').join('; ') + '. ' +
+        (dup ? F.int(dup) + ' rows appeared in more than one file and were counted once.' : 'No file repeats another.')));
+      cov.overlaps.filter((o) => !o.ok).forEach((o) => box.append(notice('warn', o.a + ' and ' + o.b + ' both cover ' + fmtDay(o.from) + ' – ' + fmtDay(o.to) + ', but only ' + o.matched + ' of their rows match (' + o.rowsA + ' and ' + o.rowsB + ' rows on those days). They may be different kinds of export or use different time zones, so those days may be counted twice. Check both files are for the same account.')));
+    }
+    if (cov) {
+      const gaps = cov.gaps.filter((g) => g.before > a.from && g.after < a.to);
+      if (gaps.length) box.append(notice('warn', 'No transactions at all ' + gaps.map((g) => 'between ' + fmtDay(g.after) + ' and ' + fmtDay(g.before) + ' (' + plural(g.empty, 'day') + ')').join('; ') +
+        '. If the business was trading then, that stretch is missing from the files loaded. Add the export for those dates, or every regular customer will look as if they paused.', { label: 'Add files…', onclick: () => $('addInput').click() }));
+    }
     const cur = Object.keys(q.currencies);
-    if (cur.length > 1) box.append(notice('warn', 'This file mixes currencies (' + cur.map((c) => c + ': ' + q.currencies[c]).join(', ') + '). Amounts are added together as-is, so totals mix currencies. Filter the export to one currency for accurate figures.'));
+    if (cur.length > 1) box.append(notice('warn', 'The data mixes currencies (' + cur.map((c) => c + ': ' + q.currencies[c]).join(', ') + '). Amounts are added together as-is, so totals mix currencies. Filter the export to one currency for accurate figures.'));
     const rejected = q.totalDataRows - q.parsed;
     if (rejected) box.append(notice('warn', plural(rejected, 'row') + ' could not be read and ' + (rejected === 1 ? 'was' : 'were') + ' left out. See Data quality at the bottom for line numbers.'));
     const partial = a.buckets.filter((b) => b.partial);
     if (partial.length && a.unit !== 'day') {
       const n = noun();
       box.append(notice('info', partial.map((b) => b.short).join(' and ') + (partial.length > 1 ? ' are partial ' + n + 's' : ' is a partial ' + n) +
-        ' (the selected range starts ' + fmtDay(a.from) + ' and ends ' + fmtDay(a.to) + '). They are hatched in the charts and skipped in the % change chart' +
+        ' (the selected range starts ' + fmtDay(a.from) + ' and ends ' + fmtDay(a.to) + '). ' + (partial.length > 1 ? 'They are' : 'It is') + ' hatched in the charts and skipped in the % change chart' +
         (a.timeframe.period === 'week' ? '; the tiles and customer tracking use complete 7-day blocks, so they are not affected.' : '; the tiles and customer tracking use complete months only.') +
         (n === 'month' || n === 'quarter' ? ' If your export covers the whole ' + n + ', set From/To to its first and last day.' : '')));
     }
@@ -790,14 +824,15 @@
     const rejected = q.totalDataRows - q.parsed;
     const sampleLines = (arr, f) => arr.slice(0, 8).map(f).join('; ') + (arr.length > 8 ? '; …' : '');
     add(rejected ? 'warn' : 'ok', 'Rows parsed', F.int(q.parsed) + ' of ' + F.int(q.totalDataRows), q.blankLines ? plural(q.blankLines, 'blank line') + ' skipped' : '');
-    add(q.badDate.length ? 'warn' : 'ok', 'Rows with unparseable dates', F.int(q.badDate.length), q.badDate.length ? 'Excluded. ' + sampleLines(q.badDate, (r) => 'line ' + r.line + ': “' + r.value + '”') : '');
+    if (q.files > 1) add('ok', 'Rows repeated across files', F.int(q.repeatedAcrossFiles), 'From ' + plural(q.files, 'file') + '. The same transaction in two overlapping exports (same day, minute, customer, amount, card and status) is counted once.');
+    add(q.badDate.length ? 'warn' : 'ok', 'Rows with unparseable dates', F.int(q.badDate.length), q.badDate.length ? 'Excluded. ' + sampleLines(q.badDate, (r) => X.where(r) + ': “' + r.value + '”') : '');
     const fmts = Object.keys(q.dateFormats);
     add(fmts.length > 1 ? 'warn' : 'info', 'Date format', fmts.map((f) => P.DATE_FORMATS[f]).join(' + '),
       fmts.length > 1 ? 'This file mixes formats (' + fmts.map((f) => F.int(q.dateFormats[f]) + ' ' + P.DATE_FORMATS[f]).join(', ') + '). Both are unambiguous, so every row was still read correctly, but check how the export was produced.'
         : 'Detected automatically. Slash dates are always read day first (03/11/2025 = 3 November); month-first dates are rejected.');
-    if (q.badAmount.length) add('warn', 'Rows with unreadable amounts', F.int(q.badAmount.length), 'Excluded. Amount must be whole cents. ' + sampleLines(q.badAmount, (r) => 'line ' + r.line + ': “' + r.value + '”'));
-    if (q.shortRows.length) add('warn', 'Rows with too few fields', F.int(q.shortRows.length), 'Excluded. ' + sampleLines(q.shortRows, (r) => 'line ' + r.line + ' (' + r.got + ' fields)'));
-    if (q.unknownStatus.length) add('warn', 'Unrecognised status values', F.int(q.unknownStatus.length), 'Excluded. ' + sampleLines(q.unknownStatus, (r) => 'line ' + r.line + ': “' + r.value + '”'));
+    if (q.badAmount.length) add('warn', 'Rows with unreadable amounts', F.int(q.badAmount.length), 'Excluded. Amount must be whole cents. ' + sampleLines(q.badAmount, (r) => X.where(r) + ': “' + r.value + '”'));
+    if (q.shortRows.length) add('warn', 'Rows with too few fields', F.int(q.shortRows.length), 'Excluded. ' + sampleLines(q.shortRows, (r) => X.where(r) + ' (' + r.got + ' fields)'));
+    if (q.unknownStatus.length) add('warn', 'Unrecognised status values', F.int(q.unknownStatus.length), 'Excluded. ' + sampleLines(q.unknownStatus, (r) => X.where(r) + ': “' + r.value + '”'));
     const grouped = [...state.members.values()].reduce((n, l) => n + l.length, 0);
     const pendN = pendingSuggestions().length;
     add(pendN ? 'warn' : 'info', 'Customer names grouped', grouped ? F.int(grouped) + ' → ' + F.int(state.members.size) : '0',
@@ -832,7 +867,7 @@
       if (!list || !list.length) return;
       body.append(el('h4', { text: title }));
       body.append(table([
-        { key: 'line', label: 'Line', num: true },
+        { key: 'line', label: 'Line', num: true, fmt: (r) => (r.src ? r.src + ' · ' + r.line : r.line) },
         { key: 'day', label: 'Date', fmt: (r) => fmtDay(r.day) },
         { key: 'customer', label: 'Customer', name: true, fmt: (r) => nameCell(r.customer, r.oneTime) },
         { key: 'cents', label: 'Amount', num: true, fmt: (r) => F.money(r.cents / 100, 2) },
@@ -875,7 +910,9 @@
 
   function bind() {
     const input = $('fileInput');
-    input.addEventListener('change', () => { loadFile(input.files[0]); });
+    input.addEventListener('change', () => { loadFiles(input.files, false); });
+    $('addInput').addEventListener('change', (e) => { loadFiles(Array.from(e.target.files), true); e.target.value = ''; });
+    $('addFiles').addEventListener('click', () => $('addInput').click());
     $('dropzone').addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } });
     $('loadAnother').addEventListener('click', () => { input.value = ''; input.click(); });
 
@@ -889,7 +926,8 @@
     document.addEventListener('drop', (e) => {
       if (!hasFiles(e)) return;
       e.preventDefault(); depth = 0; overlay.hidden = true;
-      loadFile(e.dataTransfer.files[0]);
+      // Dropping onto a loaded dashboard adds to it; on the start page it starts fresh.
+      loadFiles(e.dataTransfer.files, !!state.rows && !$('dashboard').hidden);
     });
 
     $('preset').addEventListener('change', (e) => { if (e.target.value === 'custom') return; applyPreset(e.target.value); render(); });
@@ -987,7 +1025,7 @@
   window.ccDashboard = {
     get state() { return $('app').dataset.state; },
     get analysis() { return state.analysis; },
-    loadText(text, name) { return loadFile(new File([text], name || 'test.csv', { type: 'text/csv' })); },
+    loadText(text, name) { return loadFiles([new File([text], name || 'test.csv', { type: 'text/csv' })], false); },
     summary() {
       const a = state.analysis;
       if (!a || a.empty) return null;
@@ -1007,6 +1045,8 @@
         lost: a.cardStop.lost.map((x) => ({ name: x.name, status: x.status, since: x.sinceText || '' })), seasonalOff: a.cardStop.seasonal.map((x) => x.name),
         notes: { loaded: Object.keys(state.notes).length, applied: a.notesApplied, monthlySkipped: a.momentum.monthlySkipped },
         theme: document.documentElement.dataset.theme || 'light', view: state.view,
+        coverage: state.coverage ? { files: state.coverage.files.map((f) => ({ name: f.name, from: f.from == null ? null : M.isoDate(f.from), to: f.to == null ? null : M.isoDate(f.to), rows: f.rows, kept: f.kept })),
+          overlapsOk: state.coverage.overlaps.every((o) => o.ok), gaps: state.coverage.gaps.map((g) => [M.isoDate(g.after), M.isoDate(g.before)]) } : null,
         explorer: { selected: state.selected.slice(), gross: state.explorer && !state.explorer.empty && state.selected.length ? state.explorer.totals.gross : null,
           count: state.explorer && !state.explorer.empty && state.selected.length ? state.explorer.totals.count : null,
           failed: state.explorer && !state.explorer.empty && state.selected.length ? state.explorer.retry.failedTotal : null },

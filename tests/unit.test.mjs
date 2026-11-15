@@ -8,6 +8,7 @@ const P = require('../src/parse.js');
 const M = require('../src/metrics.js');
 const G = require('../src/groups.js');
 const N = require('../src/notes.js');
+const X = require('../src/combine.js');
 const fs = require('node:fs');
 
 const iso = (day) => M.isoDate(day);
@@ -375,4 +376,47 @@ test('customer notes: lost, EFT, monthly, seasonal and sporadic customers are tr
   }
   assert.equal(a.momentum.monthlySkipped, 1);     // monthly payers are only compared month to month
   assert.deepEqual(a.cadence.map((x) => x.name), ['Weekly', 'Monthly Late']);  // a declared cycle still has a rhythm to be late against
+});
+
+test('several exports combine into one: overlaps counted once, across layouts; gaps and mismatches reported', () => {
+  const read = (n) => P.parseTransactions(fs.readFileSync(new URL('./fixtures/' + n, import.meta.url), 'utf8'), { fileName: n });
+  const file = (n) => Object.assign(read(n), { name: n });
+  const whole = P.parseTransactions(fs.readFileSync(new URL('../sample-data/sample_transactions.csv', import.meta.url), 'utf8'));
+  // Given in the "wrong" order: files are sorted by their first day.
+  const c = X.combine([file('chunk_c_apr_oct.csv'), file('chunk_b_jan_apr_newer_layout.csv'), file('chunk_a_nov_jan.csv')]);
+  assert.deepEqual(c.files.map((f) => f.name), ['chunk_a_nov_jan.csv', 'chunk_b_jan_apr_newer_layout.csv', 'chunk_c_apr_oct.csv']);
+  assert.equal(c.rows.length, whole.rows.length);                 // B's seconds and layout still match A and C to the minute
+  assert.equal(c.files[0].duplicates, 0);
+  assert.equal(c.files[1].duplicates > 0 && c.files[2].duplicates > 0, true);
+  assert.equal(c.overlaps.length, 2);
+  assert.equal(c.overlaps.every((o) => o.ok), true);
+  assert.deepEqual(c.gaps, X.findGaps(whole.rows));
+  // Same figures as the single file.
+  const a1 = M.analyse(c.rows, {}), a2 = M.analyse(whole.rows, {});
+  assert.deepEqual([a1.totals.gross, a1.totals.count, a1.totals.attempts, a1.retry.chains.length, a1.totals.voidCents],
+    [a2.totals.gross, a2.totals.count, a2.totals.attempts, a2.retry.chains.length, a2.totals.voidCents]);
+  // Rows remember which file they came from, for line references.
+  assert.match(X.where(c.rows[0]), /^chunk_a_nov_jan\.csv line \d+$/);
+  assert.equal(c.quality.parsed, whole.rows.length);               // rows used, each once
+  assert.equal(c.quality.repeatedAcrossFiles, c.files.reduce((n, f) => n + f.rows, 0) - whole.rows.length);
+  assert.equal(c.quality.totalDataRows - c.quality.parsed, 0);     // repeats are not rejected rows
+
+  // A file loaded twice adds nothing.
+  const twice = X.combine([file('chunk_a_nov_jan.csv'), file('chunk_a_nov_jan.csv')]);
+  assert.equal(twice.rows.length, read('chunk_a_nov_jan.csv').rows.length);
+  assert.equal(twice.files[1].kept, 0);
+
+  // A missing middle chunk shows up as a gap.
+  const holed = X.combine([file('chunk_a_nov_jan.csv'), file('chunk_c_apr_oct.csv')]);
+  assert.equal(holed.gaps.some((g) => g.empty >= 80), true);
+
+  // Genuine duplicates inside one file are kept; across files the larger count wins.
+  const r = (day, customer, cents, status) => ({ day, second: 600, line: 0, customer, cents, card: 'VISA', status, oneTime: false });
+  const fa = { name: 'a.csv', rows: [r(1, 'X', 100, 'Batched'), r(1, 'X', 100, 'Batched'), r(2, 'Y', 5, 'Batched')], quality: read('chunk_a_nov_jan.csv').quality };
+  const fb = { name: 'b.csv', rows: [r(2, 'Y', 5, 'Batched'), r(1, 'X', 100, 'Batched'), r(3, 'Z', 7, 'Batched')].sort((p, q) => p.day - q.day), quality: fa.quality };
+  const m = X.combine([fa, fb]);
+  assert.equal(m.rows.length, 4);            // X twice (a.csv's count), Y once, Z once
+  // Overlapping days that don't match are flagged, not silently doubled.
+  const fc = { name: 'c.csv', rows: [r(1, 'Q', 1, 'Batched'), r(2, 'Q', 2, 'Batched')], quality: fa.quality };
+  assert.equal(X.combine([fa, fc]).overlaps[0].ok, false);
 });

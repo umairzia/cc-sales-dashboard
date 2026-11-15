@@ -35,6 +35,13 @@ run python3 tests/verify_metrics.py sample-data/sample_transactions.csv "$OUT/sa
 run node tests/e2e.mjs sample-data/sample_transactions.csv --out "$OUT" --name sample_notes --groups tests/fixtures/sample_customer_groups.csv --notes tests/fixtures/sample_customer_notes.csv --interact
 run python3 tests/verify_metrics.py sample-data/sample_transactions.csv "$OUT/sample_notes.json" --groups tests/fixtures/sample_customer_groups.csv --notes tests/fixtures/sample_customer_notes.csv
 
+step "Browser: several overlapping exports (two layouts) combine to the single file's figures"
+C="tests/fixtures/chunk_a_nov_jan.csv,tests/fixtures/chunk_b_jan_apr_newer_layout.csv"
+run node tests/e2e.mjs "$C" --add tests/fixtures/chunk_c_apr_oct.csv --out "$OUT" --name chunks --expect-notice "3 files combined"
+run python3 tests/verify_metrics.py sample-data/sample_transactions.csv "$OUT/chunks.json"
+run python3 tests/verify_metrics.py "$C,tests/fixtures/chunk_c_apr_oct.csv" "$OUT/chunks.json"
+run node tests/e2e.mjs "tests/fixtures/chunk_a_nov_jan.csv,tests/fixtures/chunk_c_apr_oct.csv" --out "$OUT" --name chunks_gap --expect-notice "No transactions at all between"
+
 step "Browser: timeframes (3 weeks, 3 months, 3 years, 5 years) and edge cases"
 run node tests/e2e.mjs tests/fixtures/span_3_weeks.csv --out "$OUT" --expect-unit day --expect-timeframe short --interact
 run python3 tests/verify_metrics.py tests/fixtures/span_3_weeks.csv "$OUT/span_3_weeks.json"

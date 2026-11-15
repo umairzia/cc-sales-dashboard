@@ -27,7 +27,10 @@ file that anyone on the team can open.
 1. Download [`dashboard.html`](dashboard.html) (in GitHub, use **Download raw file**).
 2. Open it in a desktop browser (Chrome, Edge, Firefox or Safari). It works
    straight from your downloads folder (`file://`) with Wi-Fi switched off.
-3. Drag a transaction export onto the page, or click to browse.
+3. Drag one or more transaction exports onto the page, or click to browse. The
+   processor exports at most 90 days at a time, so several files can be loaded
+   together (or added later with **Add files…**): they are combined, overlapping
+   days are counted once, and missing stretches are reported.
 4. Use the filter bar to narrow the date range, change the grouping
    (day / week / month / quarter), or show successful charges only.
 5. Switch to the **Customer explorer** tab to tick one or more customers and see
@@ -457,12 +460,15 @@ The distributable is one file, but the source is modular:
 
 ```
 cc-sales-dashboard/
-├── dashboard.html              ← built, self-contained deliverable (~350 KB)
+├── dashboard.html              ← built, self-contained deliverable (~480 KB)
 ├── build.py                    ← inlines src/ + vendor/ into dashboard.html
 ├── src/
 │   ├── index.html              ← page structure (open directly while developing)
 │   ├── styles.css              ← all colours are CSS custom properties on :root
 │   ├── parse.js                ← CSV reading + cleaning rules (pure functions)
+│   ├── combine.js              ← several 90-day exports → one dataset (overlaps once, gaps reported)
+│   ├── groups.js               ← customer groups: one business, several cards
+│   ├── notes.js                ← customer notes: payment method, cycle, lost
 │   ├── metrics.js              ← all calculations (pure functions, integer cents)
 │   ├── charts.js               ← formatting + Chart.js construction
 │   └── app.js                  ← wiring, filters, state, rendering
@@ -470,15 +476,17 @@ cc-sales-dashboard/
 ├── sample-data/                ← synthetic export, fake names
 ├── scripts/
 │   ├── generate_sample.py      ← deterministic synthetic data + edge-case fixtures
+│   ├── make_chunk_fixtures.py  ← splits the sample into overlapping exports
 │   └── screenshots.mjs         ← regenerates docs/screenshots from the sample
 ├── tests/
 │   ├── run_all.sh              ← the whole verification suite
 │   ├── unit.test.mjs           ← parser + metric unit tests (node --test)
 │   ├── e2e.mjs                 ← headless-browser test of the built file
 │   ├── verify_metrics.py       ← independent pandas re-computation
-│   └── fixtures/               ← 90-day, 5-year, one-customer, malformed… files
+│   └── fixtures/               ← 90-day, 5-year, one-customer, malformed, overlapping-chunk… files
 ├── notebooks/cc_sales_analysis.ipynb  ← step-by-step pandas methodology for every chart
-└── docs/csv-format.md          ← input contract + cleaning rules
+├── docs/csv-format.md          ← input contract + cleaning rules
+└── docs/runbook.md             ← the weekly routine for the people who use it
 ```
 
 ```bash
@@ -486,6 +494,7 @@ python3 build.py              # rebuild dashboard.html (deterministic)
 python3 build.py --check      # fail if dashboard.html is stale
 tests/run_all.sh              # full verification on synthetic data
 tests/run_all.sh export.csv   # …and on a real export (results kept outside the repo)
+tests/run_all.sh a.csv,b.csv  # …several exports combined
 ```
 
 Requirements for building and testing only: Python 3.10+ with pandas and numpy,
@@ -518,7 +527,12 @@ dependency.
    payment methods) and the text shown on the tiles. 44/44 checks pass on the
    sample, on every timeframe fixture and on real exports, with and without
    customer groups and customer notes.
-4. **Timeframes and edge cases.** A 3-week file reads as "a few weeks" (daily
+4. **Several exports.** The sample is split into three overlapping files, one of
+   them in a newer layout (year-first dates with seconds, other column order).
+   Loaded together, or two at first and the third through *Add files…*, they
+   give exactly the single file's figures (47/47 checks against both the single
+   file and the three files). Leaving the middle file out raises the gap warning.
+5. **Timeframes and edge cases.** A 3-week file reads as "a few weeks" (daily
    charts, 7-day comparisons, no "started paying by card" split or 60-day list), a 90-day file as "a few months", the
    12-month sample as "about a year", and 3- and 5-year files as "more than a year"
    (year-on-year comparisons and the year-over-year chart; quarterly charts at 5

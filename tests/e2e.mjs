@@ -23,12 +23,15 @@ const args = process.argv.slice(2);
 const flag = (k) => args.includes(k);
 const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : d; };
 const csv = args.find((a, i) => !a.startsWith('--') && (i === 0 || !args[i - 1].startsWith('--') || ['--screenshot', '--dark', '--pdf', '--interact', '--empty-shot', '--hero-shot'].includes(args[i - 1])));
-if (!csv) { console.error('usage: node tests/e2e.mjs <file.csv> --out <dir> [...]'); process.exit(2); }
+if (!csv) { console.error('usage: node tests/e2e.mjs <file.csv>[,<more.csv>…] --out <dir> [--add <later.csv>[,…]] [...]'); process.exit(2); }
+// Several exports load together (comma-separated); --add loads more through "Add files…" afterwards.
+const csvs = csv.split(',').map((f) => resolve(f));
+const adds = opt('--add') ? opt('--add').split(',').map((f) => resolve(f)) : [];
 
 const here = dirname(fileURLToPath(import.meta.url));
 const html = resolve(opt('--html', resolve(here, '..', 'dashboard.html')));
 const out = resolve(opt('--out', resolve(here, 'output')));
-const name = opt('--name', basename(csv).replace(/\.[^.]+$/, ''));
+const name = opt('--name', basename(csvs[0]).replace(/\.[^.]+$/, ''));
 mkdirSync(out, { recursive: true });
 
 const failures = [];
@@ -53,8 +56,13 @@ if (flag('--screenshot') && flag('--empty-shot')) await page.screenshot({ path: 
 // Optional customer-groups / customer-notes files, loaded through the dialogs' real file inputs.
 if (opt('--groups')) await page.setInputFiles('#grpLoadInput', resolve(opt('--groups')));
 if (opt('--notes')) await page.setInputFiles('#noteLoadInput', resolve(opt('--notes')));
-await page.setInputFiles('#fileInput', resolve(csv));
+await page.setInputFiles('#fileInput', csvs);
 await page.waitForFunction(() => document.getElementById('app').dataset.state !== 'empty', null, { timeout: 30000 });
+if (adds.length) {
+  const before = await page.evaluate(() => window.ccDashboard.summary().coverage.files.length);
+  await page.setInputFiles('#addInput', adds);
+  await page.waitForFunction((n) => window.ccDashboard.summary().coverage.files.length > n, before, { timeout: 30000 });
+}
 const stateNow = await page.getAttribute('#app', 'data-state');
 const result = { name, csv: basename(csv), state: stateNow };
 
@@ -85,8 +93,10 @@ if (expectError) {
     if (expTf && result.summary.timeframe !== expTf) fail('expected timeframe ' + expTf + ', got ' + result.summary.timeframe);
     const yoyShown = await page.isVisible('#card-yoy');
     if (yoyShown !== (result.summary.timeframe === 'multi')) fail('year-over-year card ' + (yoyShown ? 'shown' : 'hidden') + ' for a ' + result.summary.timeframe + ' export');
+    const expNotice = opt('--expect-notice');
+    if (expNotice && !(await page.textContent('#notices')).includes(expNotice)) fail('expected a notice containing "' + expNotice + '"');
     const tfNotice = await page.textContent('#notices');
-    if (!/This export covers \d+ days/.test(tfNotice)) fail('timeframe explanation missing from the notices');
+    if (!/(This export|These \d+ exports) covers? \d+ days/.test(tfNotice)) fail('timeframe explanation missing from the notices');
 
     if (flag('--screenshot')) await page.screenshot({ path: resolve(out, name + '.png'), fullPage: true });
     if (flag('--screenshot') && flag('--hero-shot')) await page.screenshot({ path: resolve(out, name + '-top.png'), clip: { x: 0, y: 0, width: vw, height: +opt('--hero-height', 1250) } });

@@ -95,6 +95,29 @@ A failed charge is often re-attempted days later for the same amount.
   repeat orders (customers order against a fixed order guide) and are not
   flagged.
 
+## Several files (90-day exports)
+
+The processor exports at most 90 days per file, so several files can be loaded
+together (or added later with *Add files…*). Each file is parsed on its own,
+with its own layout and date format, then the rows are combined:
+
+- Files are taken earliest first. A row in a later file that **matches** a row
+  already taken from an earlier file is dropped. Rows match on day, time **to
+  the minute**, customer name as exported, amount, card type and status.
+  Minutes because exports re-saved in Excel keep only `HH:MM` while newer ones
+  have seconds; the processor reference (`PASRef`) is not used because Excel
+  turns it into `1.74E+15`.
+- Identical rows inside one file are all kept (genuine same-day duplicates are
+  listed in Data quality). Across files the larger count wins: a row twice in
+  each of two overlapping files counts twice, not four times.
+- Where two files cover the same days, at least 90% of the smaller file's rows
+  on those days must match. Otherwise a warning names both files and the dates.
+- Any stretch of **7 or more days with no transaction at all** (in any file) is
+  reported, because a missing file would make every regular customer look as if
+  they had paused.
+- Data quality counts *rows repeated across files* separately; they are not
+  rejected rows. Line numbers name the file (`2026-Q1.csv line 12`).
+
 ## Customer groups
 
 `Customer Number` is one label per card on file, so one customer can have several.

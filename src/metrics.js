@@ -677,7 +677,7 @@
       dupMap.get(k).push(r);
     }
     const duplicates = [...dupMap.values()].filter((g) => g.length > 1)
-      .map((g) => ({ customer: g[0].customer, cents: g[0].cents, card: g[0].card, day: g[0].day, rows: g.length, lines: g.map((r) => r.line) }));
+      .map((g) => ({ customer: g[0].customer, cents: g[0].cents, card: g[0].card, day: g[0].day, rows: g.length, lines: g.map((r) => (r.src ? r.src + ' line ' + r.line : r.line)) }));
 
     return {
       from, to, spanDays, unit, autoUnit: autoUnit(spanDays), dataMin, dataMax, successOnly, threshold,

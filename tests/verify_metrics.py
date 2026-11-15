@@ -109,6 +109,13 @@ def load(path: str, groups: tuple[dict[str, str], dict[str, str]] = ({}, {})) ->
     df["cents"] = df["cents"].astype(np.int64)
     df["cust"] = df["customer"].str.strip().str.replace(r"\s+", " ", regex=True).replace("", ONE_TIME)
     df["one_time"] = df["cust"] == ONE_TIME
+    df["card"] = df["card"].str.strip().str.upper().replace("", "UNKNOWN")
+    df["day"] = df["ts"].dt.normalize()
+    df = df.sort_values(["ts", "order"]).reset_index(drop=True)
+    return apply_groups(df, groups)
+
+
+def apply_groups(df: pd.DataFrame, groups: tuple[dict[str, str], dict[str, str]]) -> pd.DataFrame:
     by_name, by_holder = groups
     if by_name:  # several export names → one customer
         df.loc[~df.one_time, "cust"] = df.loc[~df.one_time, "cust"].map(lambda c: by_name.get(c, c))
@@ -117,9 +124,28 @@ def load(path: str, groups: tuple[dict[str, str], dict[str, str]] = ({}, {})) ->
         hit = df.one_time & holder.isin(list(by_holder))
         df.loc[hit, "cust"] = holder[hit].map(by_holder)
         df.loc[hit, "one_time"] = False
-    df["card"] = df["card"].str.strip().str.upper().replace("", "UNKNOWN")
-    df["day"] = df["ts"].dt.normalize()
-    return df.sort_values(["ts", "order"]).reset_index(drop=True)
+    return df
+
+
+def load_many(paths: list[str], groups: tuple[dict[str, str], dict[str, str]] = ({}, {})) -> pd.DataFrame:
+    """Several exports (the processor caps each at 90 days) → one table. A row that
+    appears in two files is counted once: rows match on day, time to the minute,
+    customer as exported, amount, card and status. Within one file identical rows
+    are all kept; across files the larger count wins. Files are taken earliest first."""
+    if len(paths) == 1:
+        return load(paths[0], groups)
+    frames = sorted((load(p, ({}, {})) for p in paths), key=lambda d: d.ts.min() if len(d) else pd.Timestamp.max)
+    seen: dict[str, int] = {}
+    kept = []
+    for fi, d in enumerate(frames):
+        key = d.day.astype(str) + "|" + d.ts.dt.floor("min").astype(str) + "|" + d.cust + "|" + d.cents.astype(str) + "|" + d.card + "|" + d.st
+        occurrence = key.groupby(key).cumcount()
+        earlier = key.map(lambda k: seen.get(k, 0))
+        for k, n in key.value_counts().items():
+            seen[k] = max(seen.get(k, 0), int(n))
+        kept.append(d[occurrence >= earlier].assign(file=fi))
+    df = pd.concat(kept).sort_values(["ts", "file", "order"]).reset_index(drop=True)
+    return apply_groups(df, groups)
 
 
 def auto_unit(span_days: int) -> str:
@@ -136,7 +162,7 @@ def money_text(cents: int) -> str:
 
 def main(csv_path: str, json_path: str, groups_path: str | None = None, notes_path: str | None = None) -> int:
     dash = json.load(open(json_path, encoding="utf-8"))["summary"]
-    df = load(csv_path, load_groups(groups_path))
+    df = load_many(csv_path.split(","), load_groups(groups_path))
     notes = load_notes(notes_path)
     lo, hi = df["day"].min(), df["day"].max()
     span = (hi - lo).days + 1
@@ -417,7 +443,8 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None, notes_pa
         show = lambda v: (json.dumps(v) if not isinstance(v, float) else f"{v:.10g}")[:70]
         print(f"{'PASS' if ok else 'FAIL'}  {name.ljust(width)}  python={show(a)}" + ("" if ok else f"  dashboard={show(b)}"))
         bad += not ok
-    print(f"\n{len(checks) - bad}/{len(checks)} checks passed for {csv_path.split('/')[-1]} ({unit} buckets)")
+    shown = " + ".join(p.split("/")[-1] for p in csv_path.split(","))
+    print(f"\n{len(checks) - bad}/{len(checks)} checks passed for {shown} ({unit} buckets)")
     return 1 if bad else 0
 
 
