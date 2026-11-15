@@ -24,7 +24,7 @@
 (function (root) {
   'use strict';
 
-  const GAP_DAYS = 7;          // a gap of this many days between two transaction days is reported
+  const GAP_DAYS = 7;          // this many empty days or more between two transaction days is reported
   const OVERLAP_MATCH = 0.9;   // overlapping files should agree on at least 90% of the smaller side
 
   const keyOf = (r) => r.day + '|' + Math.floor(r.second / 60) + '|' + r.customer + '|' + r.cents + '|' + r.card + '|' + r.status;
@@ -89,12 +89,12 @@
     return { rows: out, quality, files: info, overlaps, gaps: findGaps(out) };
   }
 
-  /** Stretches of GAP_DAYS+ between two consecutive days that have any transaction. */
+  /** Stretches of GAP_DAYS+ empty days between two days that have any transaction. */
   function findGaps(rows, minDays) {
     const n = minDays || GAP_DAYS;
     const days = [...new Set(rows.map((r) => r.day))].sort((a, b) => a - b);
     const gaps = [];
-    for (let i = 1; i < days.length; i++) if (days[i] - days[i - 1] >= n) gaps.push({ after: days[i - 1], before: days[i], empty: days[i] - days[i - 1] - 1 });
+    for (let i = 1; i < days.length; i++) if (days[i] - days[i - 1] - 1 >= n) gaps.push({ after: days[i - 1], before: days[i], empty: days[i] - days[i - 1] - 1 });
     return gaps;
   }
 

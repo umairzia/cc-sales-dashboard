@@ -183,6 +183,30 @@
     },
   };
 
+  /** Shades periods with no data (a stretch missing from every file loaded). */
+  const noDataBands = {
+    id: 'noDataBands',
+    beforeDatasetsDraw(chart, args, opts) {
+      if (!opts || !opts.idx || !opts.idx.length) return;
+      const { ctx, chartArea: a, scales: { x } } = chart;
+      const n = chart.data.labels.length;
+      const w = n > 1 ? Math.abs(x.getPixelForValue(1) - x.getPixelForValue(0)) : a.right - a.left;
+      ctx.save();
+      opts.idx.forEach((i) => {
+        const cx = x.getPixelForValue(i);
+        ctx.fillStyle = opts.fill;
+        ctx.fillRect(cx - w / 2, a.top, w, a.bottom - a.top);
+        ctx.fillStyle = opts.color;
+        ctx.font = '600 11px ' + chart.options.font.family;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        if (w >= 52) ctx.fillText('No data', cx, a.top + 12);
+        else { ctx.translate(cx, a.top + 34); ctx.rotate(-Math.PI / 2); ctx.fillText('No data', 0, 0); ctx.setTransform(1, 0, 0, 1, 0, 0); }
+      });
+      ctx.restore();
+    },
+  };
+  const bands = (buckets, t) => ({ idx: buckets.map((b, i) => (b.noData ? i : -1)).filter((i) => i >= 0), fill: alpha(hexOr(t.neutralMark), 0.16), color: t.muted });
+
   // ---------------------------------------------------------------------------
   // Registry
   // ---------------------------------------------------------------------------
@@ -195,7 +219,7 @@
 
   function configure(t) {
     const C = root.Chart;
-    if (!configured) { C.register(valueLabels, extremes, refLines); configured = true; }
+    if (!configured) { C.register(valueLabels, extremes, refLines, noDataBands); configured = true; }
     C.defaults.font.family = getComputedStyle(document.body).fontFamily;
     C.defaults.font.size = 12;
     C.defaults.color = t.text2;
@@ -259,9 +283,9 @@
   // ---------------------------------------------------------------------------
   function revenue(a, t, unitNoun) {
     const labels = a.buckets.map((b) => b.short + (b.partial ? '*' : ''));
-    const gross = a.series.gross.map((c) => c / 100);
+    const gross = a.series.gross.map((c, i) => (a.buckets[i].noData ? null : c / 100));
     const partialFill = hatch(t.accentSoft, t.accent);
-    const max = Math.max(...gross, 1);
+    const max = Math.max(...gross.filter((v) => v != null), 1);
     const hi = a.series.hi, lo = a.series.lo;
     return make('revenue', {
       data: {
@@ -294,11 +318,12 @@
           } },
           tooltip: {
             callbacks: {
-              title: (items) => { const b = a.buckets[items[0].dataIndex]; return b.label + (b.partial ? ' (partial)' : ''); },
+              title: (items) => { const b = a.buckets[items[0].dataIndex]; return b.label + (b.partial ? ' (partial)' : '') + (b.noData ? ' (no data in the files loaded)' : ''); },
               label: (ctx) => ' ' + ctx.dataset.label + ': ' + (ctx.raw == null ? 'n/a' : Fmt.money(ctx.raw)),
-              afterBody: (items) => { const i = items[0].dataIndex; return a.series.count[i] + ' successful charges'; },
+              afterBody: (items) => { const i = items[0].dataIndex; return a.buckets[i].noData ? '' : a.series.count[i] + ' successful charges'; },
             },
           },
+          noDataBands: bands(a.buckets, t),
           extremes: hi == null ? null : {
             hi, lo, color: t.text,
             hiText: '▲ High ' + Fmt.compact(gross[hi]),
@@ -333,9 +358,10 @@
         },
         plugins: {
           legend: { display: false },
+          noDataBands: bands(a.buckets, t),
           tooltip: { callbacks: {
             title: (items) => a.buckets[items[0].dataIndex].label,
-            label: (ctx) => ctx.raw == null ? ' n/a (partial period)' : ' ' + Fmt.signedPct(ctx.raw / 100) + ' vs previous period',
+            label: (ctx) => ctx.raw == null ? ' n/a (partial period or no data)' : ' ' + Fmt.signedPct(ctx.raw / 100) + ' vs previous period',
           } },
           valueLabels: { color: t.text2, format: (v) => (v >= 0 ? '▲ +' : '▼ ' + MINUS) + Math.abs(v).toFixed(1) + '%' },
         },
@@ -574,7 +600,8 @@
         },
         plugins: {
           legend: { labels: { usePointStyle: true } },
-          tooltip: { callbacks: { title: (items) => a.buckets[items[0].dataIndex].label } },
+          noDataBands: bands(a.buckets, t),
+          tooltip: { callbacks: { title: (items) => a.buckets[items[0].dataIndex].label + (a.buckets[items[0].dataIndex].noData ? ' (no data)' : '') } },
         },
       },
     }, 'Stacked bars of customers starting to pay by card and customers already paying by card, per period, with a cumulative line');
@@ -638,12 +665,13 @@
   function xRevenue(buckets, series, t, unitNoun) {
     const labels = buckets.map((b) => b.short + (b.partial ? '*' : ''));
     const one = series.length === 1;
+    const val = (c, i) => (buckets[i].noData ? null : c / 100);
     const datasets = series.map((x) => (one ? {
-      type: 'bar', label: x.name, data: x.data.map((c) => c / 100),
+      type: 'bar', label: x.name, data: x.data.map(val),
       backgroundColor: buckets.map((b) => (b.partial ? hatch(t.accentSoft, x.color) : x.color)),
       borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: 'start', maxBarThickness: 34, barPercentage: 0.82, categoryPercentage: 0.9,
     } : {
-      type: 'line', label: x.name, data: x.data.map((c) => c / 100), borderColor: x.color, backgroundColor: x.color,
+      type: 'line', label: x.name, data: x.data.map(val), borderColor: x.color, backgroundColor: x.color, spanGaps: false,
       borderWidth: 2, pointRadius: buckets.length > 40 ? 0 : 2.5, pointHoverRadius: 5, tension: 0.25,
       borderDash: x.other ? [5, 4] : undefined,
       segment: { borderDash: (ctx) => (buckets[ctx.p1DataIndex] && buckets[ctx.p1DataIndex].partial ? [3, 3] : x.other ? [5, 4] : undefined) },
@@ -658,6 +686,7 @@
         },
         plugins: {
           legend: { display: !one, labels: { usePointStyle: true, pointStyle: 'line', pointStyleWidth: 18 } },
+          noDataBands: bands(buckets, t),
           tooltip: {
             itemSort: (x, y) => y.raw - x.raw,
             callbacks: {

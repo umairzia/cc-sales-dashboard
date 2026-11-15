@@ -41,7 +41,27 @@
       state.storeOk = true;
     } catch (e) { state.storeOk = false; }
   }
-  const noteOf = (name) => state.notes[N.norm(name)] || null;
+  /** The note for a customer: under its own name, or under one of its export
+   *  names (a notes file written before a group or rename still applies). */
+  function noteOf(name) {
+    const direct = state.notes[N.norm(name)];
+    if (direct) return direct;
+    for (const label of state.members.get(name) || []) {
+      if (G.isManual(label)) continue;
+      const n = state.notes[N.norm(label)];
+      if (n) return n;
+    }
+    return null;
+  }
+  /** Notes keyed for the analysis: each grouped customer also gets a note written under an export name. */
+  function effectiveNotes() {
+    const out = Object.assign({}, state.notes);
+    for (const name of state.members.keys()) {
+      const k = N.norm(name);
+      if (!out[k]) { const n = noteOf(name); if (n) out[k] = Object.assign({}, n, { name }); }
+    }
+    return out;
+  }
   const resolve = (label) => state.groups[label] || label;
   const sugKey = (s) => s.members.slice().sort().join('\u0000');
 
@@ -218,7 +238,7 @@
   // Render pipeline
   // ---------------------------------------------------------------------------
   function analyse() {
-    state.analysis = M.analyse(state.mapped || state.rows, { from: state.from, to: state.to, unit: state.unit, status: state.status, threshold: state.threshold, notes: state.notes });
+    state.analysis = M.analyse(state.mapped || state.rows, { from: state.from, to: state.to, unit: state.unit, status: state.status, threshold: state.threshold, notes: effectiveNotes() });
     return state.analysis;
   }
 
@@ -333,8 +353,13 @@
     }
     if (cov) {
       const gaps = cov.gaps.filter((g) => g.before > a.from && g.after < a.to);
-      if (gaps.length) box.append(notice('warn', 'No transactions at all ' + gaps.map((g) => 'between ' + fmtDay(g.after) + ' and ' + fmtDay(g.before) + ' (' + plural(g.empty, 'day') + ')').join('; ') +
-        '. If the business was trading then, that stretch is missing from the files loaded. Add the export for those dates, or every regular customer will look as if they paused.', { label: 'Add files…', onclick: () => $('addInput').click() }));
+      if (gaps.length) {
+        const nd = a.buckets.filter((b) => b.noData).map((b) => b.short);
+        box.append(notice('warn', 'No transactions at all ' + gaps.map((g) => 'between ' + fmtDay(g.after) + ' and ' + fmtDay(g.before) + ' (' + plural(g.empty, 'day') + ')').join('; ') +
+          '. That stretch is missing from the files loaded, so it is treated as unknown, not as zero: those days don’t count towards the 60-day rule or anyone’s usual gap' +
+          (nd.length ? ', and ' + nd.join(', ') + ' ' + (nd.length > 1 ? 'are' : 'is') + ' shown as “No data” and left out of trends, comparisons and yearly totals' : '') +
+          '. If the export for those dates turns up, add it.', { label: 'Add files…', onclick: () => $('addInput').click() }));
+      }
     }
     const cur = Object.keys(q.currencies);
     if (cur.length > 1) box.append(notice('warn', 'The data mixes currencies (' + cur.map((c) => c + ': ' + q.currencies[c]).join(', ') + '). Amounts are added together as-is, so totals mix currencies. Filter the export to one currency for accurate figures.'));
@@ -418,6 +443,7 @@
     } else cap.append(...parts);
     if (a.series.hi != null) cap.append(' Highest complete ' + n + ': ' + a.buckets[a.series.hi].short + ' (' + F.money(a.series.gross[a.series.hi] / 100) + '); lowest: ' + a.buckets[a.series.lo].short + ' (' + F.money(a.series.gross[a.series.lo] / 100) + ').');
     if (a.buckets.some((b) => b.partial)) cap.append(' Hatched bars (*) are partial ' + n + 's.');
+    if (a.buckets.some((b) => b.noData)) cap.append(' Shaded “No data” ' + n + 's are missing from the files loaded, not $0.');
 
     const against = a.popLag === 7 ? 'the same weekday a week earlier' : a.popLag === 12 ? 'the same month a year earlier' : a.popLag === 4 ? 'the same quarter a year earlier' : 'the ' + n + ' before';
     $('t-pop').textContent = 'Change vs ' + against;
@@ -448,7 +474,7 @@
     ], years.slice().reverse(), {}));
     const y = a.yoy.ytd;
     const cap = clear($('cap-yoy'));
-    cap.append('Each line is one calendar year, so the same month can be compared across years and seasonal patterns stand out. Partial months at the start or end of the export are left out. ');
+    cap.append('Each line is one calendar year, so the same month can be compared across years and seasonal patterns stand out. Partial months at the start or end of the export' + (a.buckets.some((b) => b.noData) ? ', and months with no data,' : '') + ' are left out, so a year with any of them has no full-year total. ');
     if (y && y.change != null) {
       const span = y.months.length === 12 ? 'Full year ' + y.year : y.year + ' to date (' + y.months[0] + '–' + y.months[y.months.length - 1] + ')';
       cap.append(el('strong', { text: span + ': ' + F.money(y.cur / 100) + ', ' + (y.change >= 0 ? '▲ ' : '▼ ') + F.signedPct(y.change) }), ' vs the same months of ' + y.prevYear + ' (' + F.money(y.prev / 100) + ').');
@@ -1032,7 +1058,8 @@
       const T = a.totals;
       return {
         unit: a.unit, autoUnit: a.autoUnit, from: M.isoDate(a.from), to: M.isoDate(a.to), spanDays: a.spanDays,
-        buckets: a.buckets.map((b) => ({ start: M.isoDate(b.start), label: b.short, partial: b.partial })),
+        buckets: a.buckets.map((b) => ({ start: M.isoDate(b.start), label: b.short, partial: b.partial, noData: !!b.noData })),
+        missing: a.missing.map((m) => [M.isoDate(m.from), M.isoDate(m.to)]), noDataPeriods: a.momentum.noData,
         grossByBucket: a.series.gross, gross: T.gross, refunds: T.refunds, net: T.net, count: T.count, avg: T.avg,
         attempts: T.attempts, successRate: T.successRate, successRateExVoids: T.successRateExVoids, activeCustomers: T.activeCustomers,
         recoveryRate: T.recoveryRate, failedTotal: a.retry.failedTotal, recovered: a.retry.recovered, chains: a.retry.chains.length,
@@ -1257,7 +1284,9 @@
     const sinceIn = el('input', { type: 'text', placeholder: 'YYYY-MM', 'aria-label': 'Since', pattern: '\\d{4}(-\\d{1,2}(-\\d{1,2})?)?' });
     const textIn = el('input', { type: 'text', placeholder: 'Note (optional)', 'aria-label': 'Note' });
     const fill = (n) => { nameIn.value = n.name; paysIn.value = n.paysBy || ''; cycleIn.value = n.cycle || ''; statusIn.value = n.status || ''; sinceIn.value = n.sinceText || ''; textIn.value = n.note || ''; };
-    nameIn.addEventListener('change', () => { const n = noteOf(nameIn.value); if (n) fill(n); });
+    // Picking a customer who already has a note loads it, unless other fields were already chosen.
+    const untouched = () => !paysIn.value && !cycleIn.value && !statusIn.value && !sinceIn.value.trim() && !textIn.value.trim();
+    nameIn.addEventListener('change', () => { const n = noteOf(nameIn.value); if (n && untouched()) fill(Object.assign({}, n, { name: nameIn.value })); });
     const saveBtn = el('button', { type: 'button', class: 'btn primary small', onclick: () => {
       const name = nameIn.value.trim().replace(/\s+/g, ' ');
       if (!name) { $('noteNote').textContent = 'Type or pick the customer name first.'; return; }
@@ -1280,9 +1309,13 @@
     else {
       list.append(el('div', { class: 'note-row head' }, ['Customer', 'Pays by', 'Cycle', 'Status', 'Since', 'Note', ''].map((t) => el('span', { text: t }))));
       const inFile = new Set(customers.map(N.norm));
+      const groupOfLabel = new Map();
+      for (const [g, labels] of state.members) labels.forEach((l) => { if (!G.isManual(l)) groupOfLabel.set(N.norm(l), g); });
       notes.forEach((n) => {
         list.append(el('div', { class: 'note-row' },
-          el('span', { class: 'nm' }, n.name, state.rows && !inFile.has(N.norm(n.name)) ? el('span', { class: 'mut', text: ' · not in this file' }) : null),
+          el('span', { class: 'nm' }, n.name, !state.rows || inFile.has(N.norm(n.name)) ? null
+            : groupOfLabel.has(N.norm(n.name)) ? el('span', { class: 'mut', text: ' · applies to ' + groupOfLabel.get(N.norm(n.name)) })
+            : el('span', { class: 'mut', text: ' · not in this file' })),
           noteTag(n.paysBy), noteTag(n.cycle), noteTag(n.status), el('span', { class: 'mut', text: n.sinceText || '—' }), el('span', { class: 'mut', text: n.note || '' }),
           el('button', { type: 'button', class: 'x', title: 'Remove the note for ' + n.name, 'aria-label': 'Remove note for ' + n.name, text: '×', onclick: () => { delete state.notes[N.norm(n.name)]; commitNotes('Removed the note for “' + n.name + '”.'); } })));
       });
@@ -1508,7 +1541,8 @@
     // Analyse only the ticked customers' rows, with the same filters as the Overview.
     const set = new Set(state.selected);
     const rows = (state.mapped || state.rows).filter((r) => !r.oneTime && set.has(r.customer));
-    const xa = rows.length ? M.analyse(rows, { from: state.from, to: state.to, unit: state.unit, status: state.status, threshold: state.threshold, notes: state.notes }) : { empty: true };
+    // Same unknown days as the Overview: a ticked customer's own silence is not missing data.
+    const xa = rows.length ? M.analyse(rows, { from: state.from, to: state.to, unit: state.unit, status: state.status, threshold: state.threshold, notes: effectiveNotes(), missing: a.missing }) : { empty: true };
     state.explorer = xa;
     const share = a.totals.gross ? (xa.empty ? 0 : xa.totals.gross) / a.totals.gross : 0;
     const noun = M.UNIT_NOUN[a.unit];

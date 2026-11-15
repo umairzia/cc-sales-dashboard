@@ -420,3 +420,39 @@ test('several exports combine into one: overlaps counted once, across layouts; g
   const fc = { name: 'c.csv', rows: [r(1, 'Q', 1, 'Batched'), r(2, 'Q', 2, 'Batched')], quality: fa.quality };
   assert.equal(X.combine([fa, fc]).overlaps[0].ok, false);
 });
+
+test('a stretch with no data at all is unknown, not silence: no false breaks, stops or $0 months', () => {
+  const d = (s) => P.parseDate(s).day;
+  const from = d('06/01/2025'), to = from + 300;
+  const holeFrom = d('02/06/2025'), holeTo = d('03/07/2025');  // June missing for every customer (an export not loaded)
+  const rows = [];
+  const add = (customer, day) => { if (day < holeFrom || day > holeTo) rows.push({ day, second: rows.length, line: rows.length, customer, oneTime: false, cents: 10000, card: 'VISA', status: 'Batched' }); };
+  for (let day = from; day <= to; day += 3) add('Steady', day);        // pays every 3 days
+  for (let day = from; day <= to; day += 7) add('Weekly', day);
+  for (let day = from; day <= from + 130; day += 7) add('Stopped early', day);   // 170 calendar days silent, 130 known
+  for (let day = from; day <= from + 140; day += 7) add('Just before', day);     // last paid 10 days before the hole
+  for (let day = from + 196; day <= to; day += 7) add('Just before', day);       // ...and back after it
+  rows.sort((x, y) => x.day - y.day || x.second - y.second);
+
+  // The unknown stretch runs from the day after the last transaction to the day before the next one.
+  const before = Math.max(...rows.filter((r) => r.day < holeFrom).map((r) => r.day));
+  const after = Math.min(...rows.filter((r) => r.day > holeTo).map((r) => r.day));
+  assert.deepEqual(M.missingStretches(rows), [{ from: before + 1, to: after - 1 }]);
+  assert.deepEqual(X.findGaps(rows).map((g) => g.empty), [after - before - 1]);
+  const a = M.analyse(rows, {});
+  assert.equal(a.missingDays, after - before - 1);
+  // The month that is mostly inside the hole has no data: not $0, not in the trend.
+  const nd = a.buckets.filter((b) => b.noData).map((b) => M.isoDate(b.start));
+  assert.deepEqual(nd, ['2025-06-01']);
+  assert.equal(a.series.rolling.every((v, i) => !a.buckets[i].noData || v === null), true);
+  assert.deepEqual(a.momentum.noData, ["Jun '25"]);
+  // Weekly payers aren't "off card" for the hole, and their usual gap ignores it.
+  assert.deepEqual(a.cardStop.back.map((x) => x.name), []);
+  assert.equal(a.cadence.find((x) => x.name === 'Weekly').avgGap < 8, true);
+  assert.equal(a.cadence.find((x) => x.name === 'Just before').avgGap < 8, true);
+  // A customer silent for 170 calendar days (about 137 known) has stopped.
+  assert.deepEqual(a.cardStop.stopped.map((x) => x.name), ['Stopped early']);
+  // Without the hole logic the weekly customers would show a 40+ day break.
+  const naive = M.analyse(rows, { missing: [] });
+  assert.equal(naive.cadence.find((x) => x.name === 'Weekly').avgGap > a.cadence.find((x) => x.name === 'Weekly').avgGap, true);
+});

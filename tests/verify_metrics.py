@@ -117,6 +117,8 @@ def load(path: str, groups: tuple[dict[str, str], dict[str, str]] = ({}, {})) ->
 
 def apply_groups(df: pd.DataFrame, groups: tuple[dict[str, str], dict[str, str]]) -> pd.DataFrame:
     by_name, by_holder = groups
+    if "label" not in df:
+        df["label"] = df["cust"]   # the name as exported, before groups
     if by_name:  # several export names → one customer
         df.loc[~df.one_time, "cust"] = df.loc[~df.one_time, "cust"].map(lambda c: by_name.get(c, c))
     if by_holder:  # manual charges assigned to a customer by their cardholder
@@ -166,6 +168,27 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None, notes_pa
     notes = load_notes(notes_path)
     lo, hi = df["day"].min(), df["day"].max()
     span = (hi - lo).days + 1
+
+    # Unknown days: 7+ days in a row with no transaction at all, from anyone.
+    # They are missing data (an export not loaded), not silence.
+    tdays = sorted(df["day"].unique())
+    stretches = [(pd.Timestamp(a) + pd.Timedelta(days=1), pd.Timestamp(b) - pd.Timedelta(days=1))
+                 for a, b in zip(tdays, tdays[1:]) if (pd.Timestamp(b) - pd.Timestamp(a)).days - 1 >= 7]
+
+    def missing_in(x, y):
+        return sum(max(0, (min(y, t) - max(x, f)).days + 1) for f, t in stretches)
+
+    one = pd.Timedelta(days=1)
+    observed = lambda a, b: (b - a).days - missing_in(a + one, b - one)
+    mostly_missing = lambda x, y: 2 * missing_in(x, y) >= (y - x).days + 1
+
+    # A note written under an export name applies to the customer it is grouped into.
+    labels_of = df[~df.one_time].groupby("cust").label.unique()
+    for cust_name, labels in labels_of.items():
+        if NORM(cust_name) not in notes:
+            hit = next((NORM(l) for l in labels if NORM(l) in notes), None)
+            if hit:
+                notes[NORM(cust_name)] = notes[hit]
     unit = dash["unit"]
     checks: list[tuple[str, object, object, bool]] = []
 
@@ -229,6 +252,8 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None, notes_pa
     rev = sales.groupby(sp).cents.sum().reindex(periods, fill_value=0)
     eq("bucket starts", [p.start_time.strftime("%Y-%m-%d") for p in periods], [b["start"] for b in dash["buckets"]])
     eq("partial buckets", partial, [b["partial"] for b in dash["buckets"]])
+    no_data = [mostly_missing(max(p.start_time.normalize(), lo), min(p.end_time.normalize(), hi)) for p in periods]
+    eq("no-data buckets", no_data, [b.get("noData", False) for b in dash["buckets"]])
     eq("revenue per bucket (cents)", [int(x) for x in rev.values], dash["grossByBucket"])
 
     # Timeframe profile (span in days, first to last transaction inclusive):
@@ -269,7 +294,8 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None, notes_pa
     STOP = 60
     MONTH = 365.25 / 12
     pay_days = {c: sorted(set(d)) for c, d in named.groupby("cust").day}
-    breaks = {c: [(a, b) for a, b in zip(d, d[1:]) if (b - a).days >= STOP] for c, d in pay_days.items()}
+    breaks = {c: [(a, b) for a, b in zip(d, d[1:]) if observed(a, b) >= STOP] for c, d in pay_days.items()}
+    silent = {c: (hi - d[-1]).days - missing_in(d[-1] + one, hi) for c, d in pay_days.items()}   # known days since the last payment
     note = lambda c: notes.get(NORM(c), {})
     lost = {c for c in pay_days if note(c).get("status")}
     seasonal = {c for c in pay_days if note(c).get("cycle") == "seasonal"}
@@ -277,11 +303,11 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None, notes_pa
     monthly = {c for c in pay_days if note(c).get("cycle") == "monthly"}
     stop_days = lambda c: max(STOP, round(3 * MONTH)) if c in monthly else STOP
     stopped = {c for c, d in pay_days.items() if c not in lost and c not in seasonal
-               and (note(c).get("pays") in ("EFT", "cheque") or (hi - d[-1]).days >= stop_days(c))}
+               and (note(c).get("pays") in ("EFT", "cheque") or silent[c] >= stop_days(c))}
     iso = lambda d: d.strftime("%Y-%m-%d")
     eq("notes applied", sum(1 for c in pay_days if NORM(c) in notes), dash["notes"]["applied"])
     eq("lost customers (name, status)", sorted((c, note(c)["status"]) for c in lost), sorted((x["name"], x["status"]) for x in dash["lost"]))
-    eq("seasonal customers off season", sorted(c for c in seasonal if (hi - pay_days[c][-1]).days >= STOP), sorted(dash["seasonalOff"]))
+    eq("seasonal customers off season", sorted(c for c in seasonal if silent[c] >= STOP), sorted(dash["seasonalOff"]))
     eq("stopped paying by card (name, as of, from notes)", sorted((c, iso(pay_days[c][-1]), note(c).get("pays") in ("EFT", "cheque")) for c in stopped),
        sorted((x["name"], x["lastDay"], x["declared"]) for x in dash["stopped"]))
     eq("back on card after a break (name, off, back)",
@@ -299,7 +325,7 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None, notes_pa
     for c, d in pay_days.items():
         if c in stopped or c in lost or c in seasonal or c in no_rhythm:
             continue
-        gaps = [(b - a).days for a, b in zip(d, d[1:]) if (b - a).days < STOP]
+        gaps = [observed(a, b) for a, b in zip(d, d[1:]) if observed(a, b) < STOP]
         cyc = note(c).get("cycle")
         if cyc in ("weekly", "monthly"):
             cad[c] = 7.0 if cyc == "weekly" else MONTH
@@ -307,8 +333,9 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None, notes_pa
             cad[c] = float(np.mean(gaps))
     eq("payment cadence customers", sorted(cad), sorted(dash["cadence"]))
     eq("max |usual gap difference| (days)", max((abs(v - dash["cadence"].get(c, np.inf)) for c, v in cad.items()), default=0.0), 0.0, 1e-9)
-    since = {c: (hi - d[-1]).days for c, d in pay_days.items()}
-    eq("overdue against their own rhythm", sorted(c for c, g in cad.items() if since[c] >= 7 and since[c] / g >= 2), sorted(dash["late"]))
+    eq("overdue against their own rhythm", sorted(c for c, g in cad.items() if silent[c] >= 7 and silent[c] / g >= 2), sorted(dash["late"]))
+    no_data_p = [mostly_missing(a, b) for a, b in bounds]
+    eq("tracking periods with no data", sum(no_data_p), len(dash.get("noDataPeriods", [])))
 
     # Trend slopes: last 12 months for multi-year exports, otherwise all
     # periods, from the customer's first period, skipping periods spent wholly
@@ -325,7 +352,7 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None, notes_pa
             f = period_of(first_day[cust])
             if f >= len(bounds) or cust in untracked:
                 continue
-            xs = [i for i in range(max(t0, f, 0), len(bounds)) if not off_card(cust, i)]
+            xs = [i for i in range(max(t0, f, 0), len(bounds)) if not off_card(cust, i) and not no_data_p[i]]
             ys = ys_all[xs]
             if len(ys) < need or (ys > 0).sum() < need_active:
                 continue
@@ -356,8 +383,8 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None, notes_pa
         for cust, ys in series.items():
             if cust in untracked:
                 continue
-            b_on = [i for i in b_idx if not off_card(cust, i)]
-            r_on = [i for i in r_idx if not off_card(cust, i)]
+            b_on = [i for i in b_idx if not off_card(cust, i) and not no_data_p[i]]
+            r_on = [i for i in r_idx if not off_card(cust, i) and not no_data_p[i]]
             if not b_on or not r_on:
                 continue
             base, recent = ys[b_on].mean(), ys[r_on].mean()
@@ -388,6 +415,8 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None, notes_pa
             ago = last - 12
             other = ago if tf == "multi" and ago in whole else whole[-2]
             cmp = ((last.start_time.normalize(), last.end_time.normalize()), (other.start_time.normalize(), other.end_time.normalize()))
+    if cmp and any(mostly_missing(a, b) for a, b in cmp):
+        cmp = None   # no comparison against a window that is mostly unknown
     if cmp:
         (a0, a1), (b0, b1) = cmp
         iso = lambda d: d.strftime("%Y-%m-%d")
@@ -400,7 +429,8 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None, notes_pa
     if tf == "multi":
         whole = {m: int(sales[sales.day.dt.to_period("M") == m].cents.sum())
                  for m in pd.period_range(lo.to_period("M"), hi.to_period("M"), freq="M")
-                 if m.start_time.normalize() >= lo and m.end_time.normalize() <= hi}
+                 if m.start_time.normalize() >= lo and m.end_time.normalize() <= hi
+                 and not mostly_missing(m.start_time.normalize(), m.end_time.normalize())}
         years = sorted({m.year for m in pd.period_range(lo.to_period("M"), hi.to_period("M"), freq="M")})
         mine_y = {y: (sum(v for m, v in whole.items() if m.year == y) if sum(1 for m in whole if m.year == y) == 12 else None) for y in years}
         eq("year-over-year totals (cents)", mine_y, {y["year"]: y["total"] for y in dash["yoy"]})

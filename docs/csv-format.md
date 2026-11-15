@@ -113,10 +113,29 @@ with its own layout and date format, then the rows are combined:
 - Where two files cover the same days, at least 90% of the smaller file's rows
   on those days must match. Otherwise a warning names both files and the dates.
 - Any stretch of **7 or more days with no transaction at all** (in any file) is
-  reported, because a missing file would make every regular customer look as if
-  they had paused.
+  reported, and treated as **unknown days**, not as days without sales (see
+  below), because a missing file would otherwise make every regular customer
+  look as if they had paused.
 - Data quality counts *rows repeated across files* separately; they are not
   rejected rows. Line numbers name the file (`2026-Q1.csv line 12`).
+
+## Unknown days (no data)
+
+7 or more consecutive days with no transaction at all, from any customer, can
+only mean the data is missing (an export not loaded, or one that can't be
+produced). Real exports never go more than 5 days without one. Those days are
+**unknown**, never filled with made-up rows:
+
+| Where | Treatment |
+|---|---|
+| Revenue, % change, acquisition and explorer charts | A period that is mostly unknown days is shaded "No data" instead of a $0 bar, and left out of the high/low, the rolling average and every % change |
+| KPI tiles | No comparison against a window that is mostly unknown |
+| Year over year | A month that is mostly unknown has no value, so that year has no full-year total; year-to-date compares only months both years have |
+| 60-day rule, breaks, "days since" for overdue, usual gap | Measured in known days: a gap from 20 Nov to 10 Jan across a 34-day hole counts as 17 days |
+| Trends and Needs attention | Tracking periods that are mostly unknown are skipped for every customer, like periods spent off card |
+
+Totals are unchanged: unknown days add nothing. The notice under the filters
+names the stretch and the periods shown as "No data".
 
 ## Customer groups
 
@@ -145,7 +164,8 @@ Linked labels form one suggestion. Its proposed name is the tag-free name that
 covers the most revenue. Suggestions are never applied automatically.
 
 Groups are stored in the browser's `localStorage` and can be exported or
-imported as a CSV:
+imported as a CSV. A customer note written under an export name (before it was
+grouped or renamed) applies to the customer that name is grouped into:
 
 ```csv
 Customer Number,Cardholder (manual charges),Group As

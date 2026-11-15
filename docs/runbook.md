@@ -84,7 +84,10 @@ say so instead of guessing.
   missing column, US-style dates, an Excel workbook saved as `.xlsx`).
   Re-export that one as CSV.
 - **"No transactions at all between … and …"**: a stretch is missing from the
-  files loaded. Export it (overlapping a day on each side) and add it.
+  files loaded. Export it (overlapping a day on each side) and add it. If it
+  can't be exported (December 2025 can't), leave it: the dashboard treats those
+  days as unknown, shows "No data" for that month and doesn't count the days
+  towards anyone's 60-day silence.
 - **"… both cover … but only N of their rows match"**: two overlapping files
   disagree, usually because one is from a different account or was re-saved in
   Excel. Re-export the overlap from the processor.

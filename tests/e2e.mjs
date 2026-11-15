@@ -151,6 +151,8 @@ if (expectError) {
         if (g < 1) fail('manual grouping did not create a group');
         page.once('dialog', (d) => d.accept());
         await page.click('#grpClear');
+        // Put the groups file back so later steps (and the explorer check) see the grouped customers.
+        if (opt('--groups')) await page.setInputFiles('#grpLoadInput', resolve(opt('--groups')));
         steps.push('groups: manual + clear');
       }
       await page.click('#groupsClose');
@@ -162,6 +164,7 @@ if (expectError) {
         if (first) {
           const before = await page.evaluate(() => window.ccDashboard.summary().lost.length);
           await page.fill('#noteAdd input[list=noteNames]', first);
+          await page.press('#noteAdd input[list=noteNames]', 'Tab');   // leaving the name field loads any existing note
           await page.selectOption('#noteAdd select[aria-label=Status]', 'stopped ordering');
           await page.fill('#noteAdd input[aria-label=Since]', '2025-01');
           await page.click('#noteAdd .btn.primary');

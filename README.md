@@ -30,7 +30,8 @@ file that anyone on the team can open.
 3. Drag one or more transaction exports onto the page, or click to browse. The
    processor exports at most 90 days at a time, so several files can be loaded
    together (or added later with **Add files…**): they are combined, overlapping
-   days are counted once, and missing stretches are reported.
+   days are counted once, and a stretch with no data at all (a missing export) is
+   reported and treated as unknown days, shown as "No data" rather than $0.
 4. Use the filter bar to narrow the date range, change the grouping
    (day / week / month / quarter), or show successful charges only.
 5. Switch to the **Customer explorer** tab to tick one or more customers and see

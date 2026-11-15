@@ -16,6 +16,19 @@
   // "stopped paying by card as of <last card payment>", never as lost revenue,
   // and a 60+ day break between two card payments is "off card" for that time.
   const CARD_STOP_DAYS = 60;
+  // A stretch of this many days or more with no transaction at all, from any
+  // customer, means the data is missing (an export not loaded or not available),
+  // not that every customer stopped paying. Those days count as unknown.
+  // (Real exports never go more than 5 days without a transaction.)
+  const NO_DATA_DAYS = 7;
+
+  /** Unknown stretches [{from, to}] between transaction days NO_DATA_DAYS+ apart. */
+  function missingStretches(rows) {
+    const days = [...new Set(rows.map((r) => r.day))].sort((a, b) => a - b);
+    const out = [];
+    for (let i = 1; i < days.length; i++) if (days[i] - days[i - 1] - 1 >= NO_DATA_DAYS) out.push({ from: days[i - 1] + 1, to: days[i] - 1 });
+    return out;
+  }
   // Declared payment cycles (customer notes), in days. A monthly payer is only
   // "stopped" after three missed cycles, since one 60-day gap is a single
   // missed payment for them.
@@ -261,6 +274,13 @@
     const notes = opt.notes || {};
 
     const inRange = allRows.filter((r) => r.day >= from && r.day <= to);
+    // Unknown days: passed in (the explorer analyses a few customers but the
+    // gaps belong to the whole dataset) or found from every row given.
+    const missing = opt.missing || missingStretches(allRows);
+    const missingIn = (a, b) => { let n = 0; for (const m of missing) { const lo = Math.max(a, m.from), hi = Math.min(b, m.to); if (hi >= lo) n += hi - lo + 1; } return n; };
+    /** Days between two days that had data (the unknown days don't count). */
+    const observed = (a, b) => b - a - missingIn(a + 1, b - 1);
+    const mostlyMissing = (a, b) => 2 * missingIn(a, b) >= b - a + 1;
     const scope = successOnly ? inRange.filter((r) => r.status === 'Batched') : inRange;
     if (!scope.length) return { empty: true, from, to, unit, dataMin, dataMax };
 
@@ -268,7 +288,10 @@
     buckets.unit = unit;
     const B = buckets.length;
     const idxOf = makeIndexer(buckets);
-    const complete = buckets.map((b, i) => (b.partial ? -1 : i)).filter((i) => i >= 0);
+    // A bucket that is mostly unknown days has no data: it is drawn as such and
+    // left out of the high/low, the rolling average and the % change.
+    buckets.forEach((b) => { if (mostlyMissing(Math.max(b.start, from), Math.min(b.end, to))) b.noData = true; });
+    const complete = buckets.map((b, i) => (b.partial || b.noData ? -1 : i)).filter((i) => i >= 0);
 
     // Row classes ------------------------------------------------------------
     const sales = scope.filter((r) => r.status === 'Batched' && r.cents > 0);   // revenue rows
@@ -361,6 +384,7 @@
             : last.label + ' (the last complete month) compared with ' + other.label };
       }
     }
+    if (cmp && (mostlyMissing(cmp.a[0], cmp.a[1]) || mostlyMissing(cmp.b[0], cmp.b[1]))) cmp = null;
     let deltas = null;
     if (cmp) {
       const A = windowStats(cmp.a[0], cmp.a[1]), Bw = windowStats(cmp.b[0], cmp.b[1]);
@@ -380,7 +404,7 @@
     const w = ROLLING[unit];
     const rolling = buckets.map((b, i) => {
       if (i < w - 1) return null;
-      for (let j = i - w + 1; j <= i; j++) if (buckets[j].partial) return null;
+      for (let j = i - w + 1; j <= i; j++) if (buckets[j].partial || buckets[j].noData) return null;
       return mean(s.gross.slice(i - w + 1, i + 1));
     });
     let hi = null, lo = null;
@@ -394,7 +418,7 @@
     const lag = unit === 'day' ? 7 : tf.yoy && unit === 'month' ? 12 : tf.yoy && unit === 'quarter' ? 4 : 1;
     const pop = buckets.map((b, i) => {
       const j = i - lag;
-      if (j < 0 || b.partial || buckets[j].partial || s.gross[j] === 0) return null;
+      if (j < 0 || b.partial || buckets[j].partial || b.noData || buckets[j].noData || s.gross[j] === 0) return null;
       return (s.gross[i] - s.gross[j]) / s.gross[j];
     });
 
@@ -440,8 +464,9 @@
       c.breaks = [];
       for (let i = 1; i < c.days.length; i++) {
         const g = c.days[i] - c.days[i - 1];
-        if (g >= CARD_STOP_DAYS) c.breaks.push({ from: c.days[i - 1], to: c.days[i], days: g });
+        if (observed(c.days[i - 1], c.days[i]) >= CARD_STOP_DAYS) c.breaks.push({ from: c.days[i - 1], to: c.days[i], days: g });
       }
+      c.silent = to - c.lastDay - missingIn(c.lastDay + 1, to);   // days since the last card payment, unknown days not counted
       const n = c.note || {};
       c.lost = !!n.status;
       c.declaredGap = n.cycle && CYCLE_DAYS[n.cycle] ? CYCLE_DAYS[n.cycle] : null;
@@ -449,7 +474,7 @@
       c.offCardMethod = n.paysBy === 'EFT' || n.paysBy === 'cheque';
       c.seasonal = n.cycle === 'seasonal';
       c.noRhythm = n.cycle === 'sporadic' || n.cycle === 'on request' || n.paysBy === 'mixed';
-      c.stopped = !c.lost && !c.seasonal && (c.offCardMethod || to - c.lastDay >= c.stopDays);
+      c.stopped = !c.lost && !c.seasonal && (c.offCardMethod || c.silent >= c.stopDays);
       c.why = c.offCardMethod ? 'pays by ' + n.paysBy + (n.sinceText ? ' since ' + n.sinceText : '') + (n.note ? ' · ' + n.note : '')
         : n.paysBy === 'mixed' ? 'mixed card / other payments' + (n.note ? ' · ' + n.note : '')
         : n.cycle ? n.cycle + (n.note ? ' · ' + n.note : '') : n.note || null;
@@ -469,7 +494,7 @@
         .map((c) => ({ name: c.name, status: c.note.status, since: c.note.since, sinceText: c.note.sinceText, gross: c.gross / 100, count: c.count, lastDay: c.lastDay, daysSince: to - c.lastDay, note: c.note.note }))
         .sort(byGrossThenName),
       // Seasonal customers who are silent: off season, not stopped.
-      seasonal: named.filter((c) => c.seasonal && to - c.lastDay >= CARD_STOP_DAYS)
+      seasonal: named.filter((c) => c.seasonal && c.silent >= CARD_STOP_DAYS)
         .map((c) => ({ name: c.name, gross: c.gross / 100, lastDay: c.lastDay, since: to - c.lastDay }))
         .sort(byGrossThenName),
     };
@@ -504,13 +529,13 @@
     // with no rhythm (sporadic, on request, mixed, seasonal) or who are lost
     // have no cadence to be late against.
     const cadence = named.filter((c) => !c.stopped && !c.lost && !c.seasonal && !c.noRhythm).map((c) => {
-      const gaps = c.days.slice(1).map((d, i) => d - c.days[i]).filter((g) => g < CARD_STOP_DAYS);
+      const gaps = c.days.slice(1).map((d, i) => observed(c.days[i], d)).filter((g) => g < CARD_STOP_DAYS);
       if (!c.declaredGap && gaps.length < 2) return null;
       const avg = c.declaredGap || mean(gaps);
       const since = to - c.lastDay;
-      return { name: c.name, avgGap: avg, since, ratio: avg ? since / avg : null, gross: c.gross, chargeDays: c.days.length, declared: c.declaredGap ? c.note.cycle : null };
+      return { name: c.name, avgGap: avg, since, ratio: avg ? c.silent / avg : null, gross: c.gross, chargeDays: c.days.length, declared: c.declaredGap ? c.note.cycle : null, silent: c.silent };
     }).filter(Boolean).sort((a, b) => a.avgGap - b.avgGap || (a.name < b.name ? -1 : 1));
-    const drifting = cadence.filter((c) => c.since >= 7 && c.ratio >= 2).sort((a, b) => b.gross - a.gross);
+    const drifting = cadence.filter((c) => c.silent >= 7 && c.ratio >= 2).sort((a, b) => b.gross - a.gross);
 
     // Momentum: named customers, tracked by week or month per the timeframe ----------
     const periods = trackingPeriods(from, to, tf.period);
@@ -527,6 +552,9 @@
     // Lost, seasonal and no-rhythm customers have nothing to compare against
     // either, and monthly payers are only compared when periods are months.
     const tracked = named.filter((c) => !c.stopped && !c.lost && !c.seasonal && !c.noRhythm && !(c.note && c.note.cycle === 'monthly' && tf.period === 'week'));
+    // Tracking periods that are mostly unknown days are skipped for everyone.
+    const noDataP = periods.map((p) => mostlyMissing(p.start, p.end));
+    momentum.noData = periods.filter((p, i) => noDataP[i]).map((p) => p.label);
     momentum.monthlySkipped = tf.period === 'week' ? named.filter((c) => c.note && c.note.cycle === 'monthly' && !c.stopped && !c.lost).length : 0;
     // Trend: linear slope per period (the last 12 months for multi-year exports),
     // skipping periods the customer spent wholly off card.
@@ -539,7 +567,7 @@
         if (first >= P) continue;
         const all = pseries.get(c.name);
         const xs = [];
-        for (let i = Math.max(t0, first, 0); i < P; i++) if (!offCard(c, periods[i])) xs.push(i);
+        for (let i = Math.max(t0, first, 0); i < P; i++) if (!offCard(c, periods[i]) && !noDataP[i]) xs.push(i);
         const ys = xs.map((i) => all[i]);
         const activeN = ys.filter((v) => v > 0).length;
         if (ys.length < tf.trendMin || activeN < tf.trendActive) continue;
@@ -566,7 +594,7 @@
       momentum.window = { kind: wKind, recent: span(rIdx), base: span(bIdx), recentN: rIdx.length, baseN: bIdx.length };
       for (const c of tracked) {
         const ys = pseries.get(c.name);
-        const on = (idx) => idx.filter((i) => !offCard(c, periods[i]));
+        const on = (idx) => idx.filter((i) => !offCard(c, periods[i]) && !noDataP[i]);
         const bOn = on(bIdx), rOn = on(rIdx);
         if (!bOn.length || !rOn.length) continue;
         const baseAvg = mean(bOn.map((i) => ys[i]));
@@ -611,6 +639,7 @@
     const firstBucket = new Map(named.map((c) => [c.name, c.firstDay > warmEnd ? idxOf(c.firstDay) : -1]));
     const acq = { newC: zeros(), returning: zeros(), cumulative: zeros(), newKnown, warmupDays: tf.warmupDays, existingAtStart: named.filter((c) => c.firstDay <= warmEnd).length };
     s.customers.forEach((set, i) => {
+      if (buckets[i].noData) { acq.newC[i] = null; acq.returning[i] = null; return; }
       for (const name of set) { if (firstBucket.get(name) === i) acq.newC[i]++; else acq.returning[i]++; }
     });
     const seen = new Set();
@@ -652,7 +681,7 @@
         const t = ymd(b.start);
         let y = years.find((x) => x.year === t.y);
         if (!y) years.push((y = { year: t.y, months: new Array(12).fill(null) }));
-        if (!b.partial) y.months[t.m] = byMonth.get(b.start);
+        if (!b.partial && !mostlyMissing(b.start, b.end)) y.months[t.m] = byMonth.get(b.start);
       }
       years.forEach((y) => { y.complete = y.months.every((v) => v !== null); y.total = y.complete ? sum(y.months) : null; });
       years.forEach((y, i) => { const p = years[i - 1]; y.change = y.complete && p && p.complete && p.total ? (y.total - p.total) / p.total : null; });
@@ -686,6 +715,7 @@
       series: { gross: s.gross, net, refunds: s.refunds, count: s.count, rolling, pop, hi, lo },
       totals, deltas, retry: Object.assign({}, retry, { looseRecovered }),
       top15, pareto, concentration, perActive, cadence, drifting, momentum, cardStop, rfm, acq, notesApplied,
+      missing, missingDays: missingIn(from, to),
       // Every named customer in range (incl. those with only failed / voided attempts),
       // for the customer explorer's side-by-side table.
       customers: [...cust.values()].filter((c) => !c.oneTime).map((c) => ({
@@ -702,7 +732,7 @@
   const api = {
     analyse, retryChains, buildBuckets, bucketStart, nextStart, autoUnit, slope, quartileScores, segmentOf, makeIndexer,
     TIMEFRAMES, timeframeOf, trackingPeriods, periodIndex, dayRange,
-    ymd, dayOf, isoDate, longDate, UNITS, UNIT_LABEL, UNIT_NOUN, ROLLING, SEGMENTS, MONTHS, ONE_TIME, DAY_MS, CARD_STOP_DAYS, CYCLE_DAYS, normName,
+    ymd, dayOf, isoDate, longDate, UNITS, UNIT_LABEL, UNIT_NOUN, ROLLING, SEGMENTS, MONTHS, ONE_TIME, DAY_MS, CARD_STOP_DAYS, CYCLE_DAYS, NO_DATA_DAYS, missingStretches, normName,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.CCMetrics = api;

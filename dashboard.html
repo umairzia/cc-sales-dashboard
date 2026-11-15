@@ -1204,6 +1204,19 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
   // "stopped paying by card as of <last card payment>", never as lost revenue,
   // and a 60+ day break between two card payments is "off card" for that time.
   const CARD_STOP_DAYS = 60;
+  // A stretch of this many days or more with no transaction at all, from any
+  // customer, means the data is missing (an export not loaded or not available),
+  // not that every customer stopped paying. Those days count as unknown.
+  // (Real exports never go more than 5 days without a transaction.)
+  const NO_DATA_DAYS = 7;
+
+  /** Unknown stretches [{from, to}] between transaction days NO_DATA_DAYS+ apart. */
+  function missingStretches(rows) {
+    const days = [...new Set(rows.map((r) => r.day))].sort((a, b) => a - b);
+    const out = [];
+    for (let i = 1; i < days.length; i++) if (days[i] - days[i - 1] - 1 >= NO_DATA_DAYS) out.push({ from: days[i - 1] + 1, to: days[i] - 1 });
+    return out;
+  }
   // Declared payment cycles (customer notes), in days. A monthly payer is only
   // "stopped" after three missed cycles, since one 60-day gap is a single
   // missed payment for them.
@@ -1449,6 +1462,13 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     const notes = opt.notes || {};
 
     const inRange = allRows.filter((r) => r.day >= from && r.day <= to);
+    // Unknown days: passed in (the explorer analyses a few customers but the
+    // gaps belong to the whole dataset) or found from every row given.
+    const missing = opt.missing || missingStretches(allRows);
+    const missingIn = (a, b) => { let n = 0; for (const m of missing) { const lo = Math.max(a, m.from), hi = Math.min(b, m.to); if (hi >= lo) n += hi - lo + 1; } return n; };
+    /** Days between two days that had data (the unknown days don't count). */
+    const observed = (a, b) => b - a - missingIn(a + 1, b - 1);
+    const mostlyMissing = (a, b) => 2 * missingIn(a, b) >= b - a + 1;
     const scope = successOnly ? inRange.filter((r) => r.status === 'Batched') : inRange;
     if (!scope.length) return { empty: true, from, to, unit, dataMin, dataMax };
 
@@ -1456,7 +1476,10 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     buckets.unit = unit;
     const B = buckets.length;
     const idxOf = makeIndexer(buckets);
-    const complete = buckets.map((b, i) => (b.partial ? -1 : i)).filter((i) => i >= 0);
+    // A bucket that is mostly unknown days has no data: it is drawn as such and
+    // left out of the high/low, the rolling average and the % change.
+    buckets.forEach((b) => { if (mostlyMissing(Math.max(b.start, from), Math.min(b.end, to))) b.noData = true; });
+    const complete = buckets.map((b, i) => (b.partial || b.noData ? -1 : i)).filter((i) => i >= 0);
 
     // Row classes ------------------------------------------------------------
     const sales = scope.filter((r) => r.status === 'Batched' && r.cents > 0);   // revenue rows
@@ -1549,6 +1572,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
             : last.label + ' (the last complete month) compared with ' + other.label };
       }
     }
+    if (cmp && (mostlyMissing(cmp.a[0], cmp.a[1]) || mostlyMissing(cmp.b[0], cmp.b[1]))) cmp = null;
     let deltas = null;
     if (cmp) {
       const A = windowStats(cmp.a[0], cmp.a[1]), Bw = windowStats(cmp.b[0], cmp.b[1]);
@@ -1568,7 +1592,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     const w = ROLLING[unit];
     const rolling = buckets.map((b, i) => {
       if (i < w - 1) return null;
-      for (let j = i - w + 1; j <= i; j++) if (buckets[j].partial) return null;
+      for (let j = i - w + 1; j <= i; j++) if (buckets[j].partial || buckets[j].noData) return null;
       return mean(s.gross.slice(i - w + 1, i + 1));
     });
     let hi = null, lo = null;
@@ -1582,7 +1606,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     const lag = unit === 'day' ? 7 : tf.yoy && unit === 'month' ? 12 : tf.yoy && unit === 'quarter' ? 4 : 1;
     const pop = buckets.map((b, i) => {
       const j = i - lag;
-      if (j < 0 || b.partial || buckets[j].partial || s.gross[j] === 0) return null;
+      if (j < 0 || b.partial || buckets[j].partial || b.noData || buckets[j].noData || s.gross[j] === 0) return null;
       return (s.gross[i] - s.gross[j]) / s.gross[j];
     });
 
@@ -1628,8 +1652,9 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
       c.breaks = [];
       for (let i = 1; i < c.days.length; i++) {
         const g = c.days[i] - c.days[i - 1];
-        if (g >= CARD_STOP_DAYS) c.breaks.push({ from: c.days[i - 1], to: c.days[i], days: g });
+        if (observed(c.days[i - 1], c.days[i]) >= CARD_STOP_DAYS) c.breaks.push({ from: c.days[i - 1], to: c.days[i], days: g });
       }
+      c.silent = to - c.lastDay - missingIn(c.lastDay + 1, to);   // days since the last card payment, unknown days not counted
       const n = c.note || {};
       c.lost = !!n.status;
       c.declaredGap = n.cycle && CYCLE_DAYS[n.cycle] ? CYCLE_DAYS[n.cycle] : null;
@@ -1637,7 +1662,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
       c.offCardMethod = n.paysBy === 'EFT' || n.paysBy === 'cheque';
       c.seasonal = n.cycle === 'seasonal';
       c.noRhythm = n.cycle === 'sporadic' || n.cycle === 'on request' || n.paysBy === 'mixed';
-      c.stopped = !c.lost && !c.seasonal && (c.offCardMethod || to - c.lastDay >= c.stopDays);
+      c.stopped = !c.lost && !c.seasonal && (c.offCardMethod || c.silent >= c.stopDays);
       c.why = c.offCardMethod ? 'pays by ' + n.paysBy + (n.sinceText ? ' since ' + n.sinceText : '') + (n.note ? ' · ' + n.note : '')
         : n.paysBy === 'mixed' ? 'mixed card / other payments' + (n.note ? ' · ' + n.note : '')
         : n.cycle ? n.cycle + (n.note ? ' · ' + n.note : '') : n.note || null;
@@ -1657,7 +1682,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
         .map((c) => ({ name: c.name, status: c.note.status, since: c.note.since, sinceText: c.note.sinceText, gross: c.gross / 100, count: c.count, lastDay: c.lastDay, daysSince: to - c.lastDay, note: c.note.note }))
         .sort(byGrossThenName),
       // Seasonal customers who are silent: off season, not stopped.
-      seasonal: named.filter((c) => c.seasonal && to - c.lastDay >= CARD_STOP_DAYS)
+      seasonal: named.filter((c) => c.seasonal && c.silent >= CARD_STOP_DAYS)
         .map((c) => ({ name: c.name, gross: c.gross / 100, lastDay: c.lastDay, since: to - c.lastDay }))
         .sort(byGrossThenName),
     };
@@ -1692,13 +1717,13 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     // with no rhythm (sporadic, on request, mixed, seasonal) or who are lost
     // have no cadence to be late against.
     const cadence = named.filter((c) => !c.stopped && !c.lost && !c.seasonal && !c.noRhythm).map((c) => {
-      const gaps = c.days.slice(1).map((d, i) => d - c.days[i]).filter((g) => g < CARD_STOP_DAYS);
+      const gaps = c.days.slice(1).map((d, i) => observed(c.days[i], d)).filter((g) => g < CARD_STOP_DAYS);
       if (!c.declaredGap && gaps.length < 2) return null;
       const avg = c.declaredGap || mean(gaps);
       const since = to - c.lastDay;
-      return { name: c.name, avgGap: avg, since, ratio: avg ? since / avg : null, gross: c.gross, chargeDays: c.days.length, declared: c.declaredGap ? c.note.cycle : null };
+      return { name: c.name, avgGap: avg, since, ratio: avg ? c.silent / avg : null, gross: c.gross, chargeDays: c.days.length, declared: c.declaredGap ? c.note.cycle : null, silent: c.silent };
     }).filter(Boolean).sort((a, b) => a.avgGap - b.avgGap || (a.name < b.name ? -1 : 1));
-    const drifting = cadence.filter((c) => c.since >= 7 && c.ratio >= 2).sort((a, b) => b.gross - a.gross);
+    const drifting = cadence.filter((c) => c.silent >= 7 && c.ratio >= 2).sort((a, b) => b.gross - a.gross);
 
     // Momentum: named customers, tracked by week or month per the timeframe ----------
     const periods = trackingPeriods(from, to, tf.period);
@@ -1715,6 +1740,9 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     // Lost, seasonal and no-rhythm customers have nothing to compare against
     // either, and monthly payers are only compared when periods are months.
     const tracked = named.filter((c) => !c.stopped && !c.lost && !c.seasonal && !c.noRhythm && !(c.note && c.note.cycle === 'monthly' && tf.period === 'week'));
+    // Tracking periods that are mostly unknown days are skipped for everyone.
+    const noDataP = periods.map((p) => mostlyMissing(p.start, p.end));
+    momentum.noData = periods.filter((p, i) => noDataP[i]).map((p) => p.label);
     momentum.monthlySkipped = tf.period === 'week' ? named.filter((c) => c.note && c.note.cycle === 'monthly' && !c.stopped && !c.lost).length : 0;
     // Trend: linear slope per period (the last 12 months for multi-year exports),
     // skipping periods the customer spent wholly off card.
@@ -1727,7 +1755,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
         if (first >= P) continue;
         const all = pseries.get(c.name);
         const xs = [];
-        for (let i = Math.max(t0, first, 0); i < P; i++) if (!offCard(c, periods[i])) xs.push(i);
+        for (let i = Math.max(t0, first, 0); i < P; i++) if (!offCard(c, periods[i]) && !noDataP[i]) xs.push(i);
         const ys = xs.map((i) => all[i]);
         const activeN = ys.filter((v) => v > 0).length;
         if (ys.length < tf.trendMin || activeN < tf.trendActive) continue;
@@ -1754,7 +1782,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
       momentum.window = { kind: wKind, recent: span(rIdx), base: span(bIdx), recentN: rIdx.length, baseN: bIdx.length };
       for (const c of tracked) {
         const ys = pseries.get(c.name);
-        const on = (idx) => idx.filter((i) => !offCard(c, periods[i]));
+        const on = (idx) => idx.filter((i) => !offCard(c, periods[i]) && !noDataP[i]);
         const bOn = on(bIdx), rOn = on(rIdx);
         if (!bOn.length || !rOn.length) continue;
         const baseAvg = mean(bOn.map((i) => ys[i]));
@@ -1799,6 +1827,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     const firstBucket = new Map(named.map((c) => [c.name, c.firstDay > warmEnd ? idxOf(c.firstDay) : -1]));
     const acq = { newC: zeros(), returning: zeros(), cumulative: zeros(), newKnown, warmupDays: tf.warmupDays, existingAtStart: named.filter((c) => c.firstDay <= warmEnd).length };
     s.customers.forEach((set, i) => {
+      if (buckets[i].noData) { acq.newC[i] = null; acq.returning[i] = null; return; }
       for (const name of set) { if (firstBucket.get(name) === i) acq.newC[i]++; else acq.returning[i]++; }
     });
     const seen = new Set();
@@ -1840,7 +1869,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
         const t = ymd(b.start);
         let y = years.find((x) => x.year === t.y);
         if (!y) years.push((y = { year: t.y, months: new Array(12).fill(null) }));
-        if (!b.partial) y.months[t.m] = byMonth.get(b.start);
+        if (!b.partial && !mostlyMissing(b.start, b.end)) y.months[t.m] = byMonth.get(b.start);
       }
       years.forEach((y) => { y.complete = y.months.every((v) => v !== null); y.total = y.complete ? sum(y.months) : null; });
       years.forEach((y, i) => { const p = years[i - 1]; y.change = y.complete && p && p.complete && p.total ? (y.total - p.total) / p.total : null; });
@@ -1874,6 +1903,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
       series: { gross: s.gross, net, refunds: s.refunds, count: s.count, rolling, pop, hi, lo },
       totals, deltas, retry: Object.assign({}, retry, { looseRecovered }),
       top15, pareto, concentration, perActive, cadence, drifting, momentum, cardStop, rfm, acq, notesApplied,
+      missing, missingDays: missingIn(from, to),
       // Every named customer in range (incl. those with only failed / voided attempts),
       // for the customer explorer's side-by-side table.
       customers: [...cust.values()].filter((c) => !c.oneTime).map((c) => ({
@@ -1890,7 +1920,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
   const api = {
     analyse, retryChains, buildBuckets, bucketStart, nextStart, autoUnit, slope, quartileScores, segmentOf, makeIndexer,
     TIMEFRAMES, timeframeOf, trackingPeriods, periodIndex, dayRange,
-    ymd, dayOf, isoDate, longDate, UNITS, UNIT_LABEL, UNIT_NOUN, ROLLING, SEGMENTS, MONTHS, ONE_TIME, DAY_MS, CARD_STOP_DAYS, CYCLE_DAYS, normName,
+    ymd, dayOf, isoDate, longDate, UNITS, UNIT_LABEL, UNIT_NOUN, ROLLING, SEGMENTS, MONTHS, ONE_TIME, DAY_MS, CARD_STOP_DAYS, CYCLE_DAYS, NO_DATA_DAYS, missingStretches, normName,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.CCMetrics = api;
@@ -2256,7 +2286,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
 (function (root) {
   'use strict';
 
-  const GAP_DAYS = 7;          // a gap of this many days between two transaction days is reported
+  const GAP_DAYS = 7;          // this many empty days or more between two transaction days is reported
   const OVERLAP_MATCH = 0.9;   // overlapping files should agree on at least 90% of the smaller side
 
   const keyOf = (r) => r.day + '|' + Math.floor(r.second / 60) + '|' + r.customer + '|' + r.cents + '|' + r.card + '|' + r.status;
@@ -2321,12 +2351,12 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     return { rows: out, quality, files: info, overlaps, gaps: findGaps(out) };
   }
 
-  /** Stretches of GAP_DAYS+ between two consecutive days that have any transaction. */
+  /** Stretches of GAP_DAYS+ empty days between two days that have any transaction. */
   function findGaps(rows, minDays) {
     const n = minDays || GAP_DAYS;
     const days = [...new Set(rows.map((r) => r.day))].sort((a, b) => a - b);
     const gaps = [];
-    for (let i = 1; i < days.length; i++) if (days[i] - days[i - 1] >= n) gaps.push({ after: days[i - 1], before: days[i], empty: days[i] - days[i - 1] - 1 });
+    for (let i = 1; i < days.length; i++) if (days[i] - days[i - 1] - 1 >= n) gaps.push({ after: days[i - 1], before: days[i], empty: days[i] - days[i - 1] - 1 });
     return gaps;
   }
 
@@ -2549,6 +2579,30 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     },
   };
 
+  /** Shades periods with no data (a stretch missing from every file loaded). */
+  const noDataBands = {
+    id: 'noDataBands',
+    beforeDatasetsDraw(chart, args, opts) {
+      if (!opts || !opts.idx || !opts.idx.length) return;
+      const { ctx, chartArea: a, scales: { x } } = chart;
+      const n = chart.data.labels.length;
+      const w = n > 1 ? Math.abs(x.getPixelForValue(1) - x.getPixelForValue(0)) : a.right - a.left;
+      ctx.save();
+      opts.idx.forEach((i) => {
+        const cx = x.getPixelForValue(i);
+        ctx.fillStyle = opts.fill;
+        ctx.fillRect(cx - w / 2, a.top, w, a.bottom - a.top);
+        ctx.fillStyle = opts.color;
+        ctx.font = '600 11px ' + chart.options.font.family;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        if (w >= 52) ctx.fillText('No data', cx, a.top + 12);
+        else { ctx.translate(cx, a.top + 34); ctx.rotate(-Math.PI / 2); ctx.fillText('No data', 0, 0); ctx.setTransform(1, 0, 0, 1, 0, 0); }
+      });
+      ctx.restore();
+    },
+  };
+  const bands = (buckets, t) => ({ idx: buckets.map((b, i) => (b.noData ? i : -1)).filter((i) => i >= 0), fill: alpha(hexOr(t.neutralMark), 0.16), color: t.muted });
+
   // ---------------------------------------------------------------------------
   // Registry
   // ---------------------------------------------------------------------------
@@ -2561,7 +2615,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
 
   function configure(t) {
     const C = root.Chart;
-    if (!configured) { C.register(valueLabels, extremes, refLines); configured = true; }
+    if (!configured) { C.register(valueLabels, extremes, refLines, noDataBands); configured = true; }
     C.defaults.font.family = getComputedStyle(document.body).fontFamily;
     C.defaults.font.size = 12;
     C.defaults.color = t.text2;
@@ -2625,9 +2679,9 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
   // ---------------------------------------------------------------------------
   function revenue(a, t, unitNoun) {
     const labels = a.buckets.map((b) => b.short + (b.partial ? '*' : ''));
-    const gross = a.series.gross.map((c) => c / 100);
+    const gross = a.series.gross.map((c, i) => (a.buckets[i].noData ? null : c / 100));
     const partialFill = hatch(t.accentSoft, t.accent);
-    const max = Math.max(...gross, 1);
+    const max = Math.max(...gross.filter((v) => v != null), 1);
     const hi = a.series.hi, lo = a.series.lo;
     return make('revenue', {
       data: {
@@ -2660,11 +2714,12 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
           } },
           tooltip: {
             callbacks: {
-              title: (items) => { const b = a.buckets[items[0].dataIndex]; return b.label + (b.partial ? ' (partial)' : ''); },
+              title: (items) => { const b = a.buckets[items[0].dataIndex]; return b.label + (b.partial ? ' (partial)' : '') + (b.noData ? ' (no data in the files loaded)' : ''); },
               label: (ctx) => ' ' + ctx.dataset.label + ': ' + (ctx.raw == null ? 'n/a' : Fmt.money(ctx.raw)),
-              afterBody: (items) => { const i = items[0].dataIndex; return a.series.count[i] + ' successful charges'; },
+              afterBody: (items) => { const i = items[0].dataIndex; return a.buckets[i].noData ? '' : a.series.count[i] + ' successful charges'; },
             },
           },
+          noDataBands: bands(a.buckets, t),
           extremes: hi == null ? null : {
             hi, lo, color: t.text,
             hiText: '▲ High ' + Fmt.compact(gross[hi]),
@@ -2699,9 +2754,10 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
         },
         plugins: {
           legend: { display: false },
+          noDataBands: bands(a.buckets, t),
           tooltip: { callbacks: {
             title: (items) => a.buckets[items[0].dataIndex].label,
-            label: (ctx) => ctx.raw == null ? ' n/a (partial period)' : ' ' + Fmt.signedPct(ctx.raw / 100) + ' vs previous period',
+            label: (ctx) => ctx.raw == null ? ' n/a (partial period or no data)' : ' ' + Fmt.signedPct(ctx.raw / 100) + ' vs previous period',
           } },
           valueLabels: { color: t.text2, format: (v) => (v >= 0 ? '▲ +' : '▼ ' + MINUS) + Math.abs(v).toFixed(1) + '%' },
         },
@@ -2940,7 +2996,8 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
         },
         plugins: {
           legend: { labels: { usePointStyle: true } },
-          tooltip: { callbacks: { title: (items) => a.buckets[items[0].dataIndex].label } },
+          noDataBands: bands(a.buckets, t),
+          tooltip: { callbacks: { title: (items) => a.buckets[items[0].dataIndex].label + (a.buckets[items[0].dataIndex].noData ? ' (no data)' : '') } },
         },
       },
     }, 'Stacked bars of customers starting to pay by card and customers already paying by card, per period, with a cumulative line');
@@ -3004,12 +3061,13 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
   function xRevenue(buckets, series, t, unitNoun) {
     const labels = buckets.map((b) => b.short + (b.partial ? '*' : ''));
     const one = series.length === 1;
+    const val = (c, i) => (buckets[i].noData ? null : c / 100);
     const datasets = series.map((x) => (one ? {
-      type: 'bar', label: x.name, data: x.data.map((c) => c / 100),
+      type: 'bar', label: x.name, data: x.data.map(val),
       backgroundColor: buckets.map((b) => (b.partial ? hatch(t.accentSoft, x.color) : x.color)),
       borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: 'start', maxBarThickness: 34, barPercentage: 0.82, categoryPercentage: 0.9,
     } : {
-      type: 'line', label: x.name, data: x.data.map((c) => c / 100), borderColor: x.color, backgroundColor: x.color,
+      type: 'line', label: x.name, data: x.data.map(val), borderColor: x.color, backgroundColor: x.color, spanGaps: false,
       borderWidth: 2, pointRadius: buckets.length > 40 ? 0 : 2.5, pointHoverRadius: 5, tension: 0.25,
       borderDash: x.other ? [5, 4] : undefined,
       segment: { borderDash: (ctx) => (buckets[ctx.p1DataIndex] && buckets[ctx.p1DataIndex].partial ? [3, 3] : x.other ? [5, 4] : undefined) },
@@ -3024,6 +3082,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
         },
         plugins: {
           legend: { display: !one, labels: { usePointStyle: true, pointStyle: 'line', pointStyleWidth: 18 } },
+          noDataBands: bands(buckets, t),
           tooltip: {
             itemSort: (x, y) => y.raw - x.raw,
             callbacks: {
@@ -3151,7 +3210,27 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
       state.storeOk = true;
     } catch (e) { state.storeOk = false; }
   }
-  const noteOf = (name) => state.notes[N.norm(name)] || null;
+  /** The note for a customer: under its own name, or under one of its export
+   *  names (a notes file written before a group or rename still applies). */
+  function noteOf(name) {
+    const direct = state.notes[N.norm(name)];
+    if (direct) return direct;
+    for (const label of state.members.get(name) || []) {
+      if (G.isManual(label)) continue;
+      const n = state.notes[N.norm(label)];
+      if (n) return n;
+    }
+    return null;
+  }
+  /** Notes keyed for the analysis: each grouped customer also gets a note written under an export name. */
+  function effectiveNotes() {
+    const out = Object.assign({}, state.notes);
+    for (const name of state.members.keys()) {
+      const k = N.norm(name);
+      if (!out[k]) { const n = noteOf(name); if (n) out[k] = Object.assign({}, n, { name }); }
+    }
+    return out;
+  }
   const resolve = (label) => state.groups[label] || label;
   const sugKey = (s) => s.members.slice().sort().join('\u0000');
 
@@ -3328,7 +3407,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
   // Render pipeline
   // ---------------------------------------------------------------------------
   function analyse() {
-    state.analysis = M.analyse(state.mapped || state.rows, { from: state.from, to: state.to, unit: state.unit, status: state.status, threshold: state.threshold, notes: state.notes });
+    state.analysis = M.analyse(state.mapped || state.rows, { from: state.from, to: state.to, unit: state.unit, status: state.status, threshold: state.threshold, notes: effectiveNotes() });
     return state.analysis;
   }
 
@@ -3443,8 +3522,13 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     }
     if (cov) {
       const gaps = cov.gaps.filter((g) => g.before > a.from && g.after < a.to);
-      if (gaps.length) box.append(notice('warn', 'No transactions at all ' + gaps.map((g) => 'between ' + fmtDay(g.after) + ' and ' + fmtDay(g.before) + ' (' + plural(g.empty, 'day') + ')').join('; ') +
-        '. If the business was trading then, that stretch is missing from the files loaded. Add the export for those dates, or every regular customer will look as if they paused.', { label: 'Add files…', onclick: () => $('addInput').click() }));
+      if (gaps.length) {
+        const nd = a.buckets.filter((b) => b.noData).map((b) => b.short);
+        box.append(notice('warn', 'No transactions at all ' + gaps.map((g) => 'between ' + fmtDay(g.after) + ' and ' + fmtDay(g.before) + ' (' + plural(g.empty, 'day') + ')').join('; ') +
+          '. That stretch is missing from the files loaded, so it is treated as unknown, not as zero: those days don’t count towards the 60-day rule or anyone’s usual gap' +
+          (nd.length ? ', and ' + nd.join(', ') + ' ' + (nd.length > 1 ? 'are' : 'is') + ' shown as “No data” and left out of trends, comparisons and yearly totals' : '') +
+          '. If the export for those dates turns up, add it.', { label: 'Add files…', onclick: () => $('addInput').click() }));
+      }
     }
     const cur = Object.keys(q.currencies);
     if (cur.length > 1) box.append(notice('warn', 'The data mixes currencies (' + cur.map((c) => c + ': ' + q.currencies[c]).join(', ') + '). Amounts are added together as-is, so totals mix currencies. Filter the export to one currency for accurate figures.'));
@@ -3528,6 +3612,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     } else cap.append(...parts);
     if (a.series.hi != null) cap.append(' Highest complete ' + n + ': ' + a.buckets[a.series.hi].short + ' (' + F.money(a.series.gross[a.series.hi] / 100) + '); lowest: ' + a.buckets[a.series.lo].short + ' (' + F.money(a.series.gross[a.series.lo] / 100) + ').');
     if (a.buckets.some((b) => b.partial)) cap.append(' Hatched bars (*) are partial ' + n + 's.');
+    if (a.buckets.some((b) => b.noData)) cap.append(' Shaded “No data” ' + n + 's are missing from the files loaded, not $0.');
 
     const against = a.popLag === 7 ? 'the same weekday a week earlier' : a.popLag === 12 ? 'the same month a year earlier' : a.popLag === 4 ? 'the same quarter a year earlier' : 'the ' + n + ' before';
     $('t-pop').textContent = 'Change vs ' + against;
@@ -3558,7 +3643,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     ], years.slice().reverse(), {}));
     const y = a.yoy.ytd;
     const cap = clear($('cap-yoy'));
-    cap.append('Each line is one calendar year, so the same month can be compared across years and seasonal patterns stand out. Partial months at the start or end of the export are left out. ');
+    cap.append('Each line is one calendar year, so the same month can be compared across years and seasonal patterns stand out. Partial months at the start or end of the export' + (a.buckets.some((b) => b.noData) ? ', and months with no data,' : '') + ' are left out, so a year with any of them has no full-year total. ');
     if (y && y.change != null) {
       const span = y.months.length === 12 ? 'Full year ' + y.year : y.year + ' to date (' + y.months[0] + '–' + y.months[y.months.length - 1] + ')';
       cap.append(el('strong', { text: span + ': ' + F.money(y.cur / 100) + ', ' + (y.change >= 0 ? '▲ ' : '▼ ') + F.signedPct(y.change) }), ' vs the same months of ' + y.prevYear + ' (' + F.money(y.prev / 100) + ').');
@@ -4142,7 +4227,8 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
       const T = a.totals;
       return {
         unit: a.unit, autoUnit: a.autoUnit, from: M.isoDate(a.from), to: M.isoDate(a.to), spanDays: a.spanDays,
-        buckets: a.buckets.map((b) => ({ start: M.isoDate(b.start), label: b.short, partial: b.partial })),
+        buckets: a.buckets.map((b) => ({ start: M.isoDate(b.start), label: b.short, partial: b.partial, noData: !!b.noData })),
+        missing: a.missing.map((m) => [M.isoDate(m.from), M.isoDate(m.to)]), noDataPeriods: a.momentum.noData,
         grossByBucket: a.series.gross, gross: T.gross, refunds: T.refunds, net: T.net, count: T.count, avg: T.avg,
         attempts: T.attempts, successRate: T.successRate, successRateExVoids: T.successRateExVoids, activeCustomers: T.activeCustomers,
         recoveryRate: T.recoveryRate, failedTotal: a.retry.failedTotal, recovered: a.retry.recovered, chains: a.retry.chains.length,
@@ -4367,7 +4453,9 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     const sinceIn = el('input', { type: 'text', placeholder: 'YYYY-MM', 'aria-label': 'Since', pattern: '\\d{4}(-\\d{1,2}(-\\d{1,2})?)?' });
     const textIn = el('input', { type: 'text', placeholder: 'Note (optional)', 'aria-label': 'Note' });
     const fill = (n) => { nameIn.value = n.name; paysIn.value = n.paysBy || ''; cycleIn.value = n.cycle || ''; statusIn.value = n.status || ''; sinceIn.value = n.sinceText || ''; textIn.value = n.note || ''; };
-    nameIn.addEventListener('change', () => { const n = noteOf(nameIn.value); if (n) fill(n); });
+    // Picking a customer who already has a note loads it, unless other fields were already chosen.
+    const untouched = () => !paysIn.value && !cycleIn.value && !statusIn.value && !sinceIn.value.trim() && !textIn.value.trim();
+    nameIn.addEventListener('change', () => { const n = noteOf(nameIn.value); if (n && untouched()) fill(Object.assign({}, n, { name: nameIn.value })); });
     const saveBtn = el('button', { type: 'button', class: 'btn primary small', onclick: () => {
       const name = nameIn.value.trim().replace(/\s+/g, ' ');
       if (!name) { $('noteNote').textContent = 'Type or pick the customer name first.'; return; }
@@ -4390,9 +4478,13 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     else {
       list.append(el('div', { class: 'note-row head' }, ['Customer', 'Pays by', 'Cycle', 'Status', 'Since', 'Note', ''].map((t) => el('span', { text: t }))));
       const inFile = new Set(customers.map(N.norm));
+      const groupOfLabel = new Map();
+      for (const [g, labels] of state.members) labels.forEach((l) => { if (!G.isManual(l)) groupOfLabel.set(N.norm(l), g); });
       notes.forEach((n) => {
         list.append(el('div', { class: 'note-row' },
-          el('span', { class: 'nm' }, n.name, state.rows && !inFile.has(N.norm(n.name)) ? el('span', { class: 'mut', text: ' · not in this file' }) : null),
+          el('span', { class: 'nm' }, n.name, !state.rows || inFile.has(N.norm(n.name)) ? null
+            : groupOfLabel.has(N.norm(n.name)) ? el('span', { class: 'mut', text: ' · applies to ' + groupOfLabel.get(N.norm(n.name)) })
+            : el('span', { class: 'mut', text: ' · not in this file' })),
           noteTag(n.paysBy), noteTag(n.cycle), noteTag(n.status), el('span', { class: 'mut', text: n.sinceText || '—' }), el('span', { class: 'mut', text: n.note || '' }),
           el('button', { type: 'button', class: 'x', title: 'Remove the note for ' + n.name, 'aria-label': 'Remove note for ' + n.name, text: '×', onclick: () => { delete state.notes[N.norm(n.name)]; commitNotes('Removed the note for “' + n.name + '”.'); } })));
       });
@@ -4618,7 +4710,8 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     // Analyse only the ticked customers' rows, with the same filters as the Overview.
     const set = new Set(state.selected);
     const rows = (state.mapped || state.rows).filter((r) => !r.oneTime && set.has(r.customer));
-    const xa = rows.length ? M.analyse(rows, { from: state.from, to: state.to, unit: state.unit, status: state.status, threshold: state.threshold, notes: state.notes }) : { empty: true };
+    // Same unknown days as the Overview: a ticked customer's own silence is not missing data.
+    const xa = rows.length ? M.analyse(rows, { from: state.from, to: state.to, unit: state.unit, status: state.status, threshold: state.threshold, notes: effectiveNotes(), missing: a.missing }) : { empty: true };
     state.explorer = xa;
     const share = a.totals.gross ? (xa.empty ? 0 : xa.totals.gross) / a.totals.gross : 0;
     const noun = M.UNIT_NOUN[a.unit];
