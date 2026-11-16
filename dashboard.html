@@ -1657,8 +1657,11 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
       c.silent = to - c.lastDay - missingIn(c.lastDay + 1, to);   // days since the last card payment, unknown days not counted
       const n = c.note || {};
       c.lost = !!n.status;
-      c.declaredGap = n.cycle && CYCLE_DAYS[n.cycle] ? CYCLE_DAYS[n.cycle] : null;
-      c.stopDays = n.cycle === 'monthly' ? Math.max(CARD_STOP_DAYS, Math.round(3 * CYCLE_DAYS.monthly)) : CARD_STOP_DAYS;
+      // A declared cycle (weekly, monthly, "every 21 days") replaces the measured
+      // gap; a customer on a long cycle only counts as stopped after 3 missed cycles.
+      c.declaredGap = n.cycle && CYCLE_DAYS[n.cycle] ? CYCLE_DAYS[n.cycle] : n.cycleDays || null;
+      c.stopDays = c.declaredGap ? Math.max(CARD_STOP_DAYS, Math.round(3 * c.declaredGap)) : CARD_STOP_DAYS;
+      c.longCycle = !!c.declaredGap && c.declaredGap >= 14;
       c.offCardMethod = n.paysBy === 'EFT' || n.paysBy === 'cheque';
       c.seasonal = n.cycle === 'seasonal';
       c.noRhythm = n.cycle === 'sporadic' || n.cycle === 'on request' || n.paysBy === 'mixed';
@@ -1679,7 +1682,10 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
         .sort(byGrossThenName),
       // Lost customers: the business says they stopped ordering or closed.
       lost: named.filter((c) => c.lost)
-        .map((c) => ({ name: c.name, status: c.note.status, since: c.note.since, sinceText: c.note.sinceText, gross: c.gross / 100, count: c.count, lastDay: c.lastDay, daysSince: to - c.lastDay, note: c.note.note }))
+        // paidAfter: a card payment after the end of the Since period ("2025" ends 31 Dec 2025),
+        // which contradicts the note and is worth a check.
+        .map((c) => ({ name: c.name, status: c.note.status, since: c.note.since, sinceText: c.note.sinceText, gross: c.gross / 100, count: c.count, lastDay: c.lastDay, daysSince: to - c.lastDay, note: c.note.note,
+          paidAfter: c.note.sinceEnd != null && c.lastDay > c.note.sinceEnd ? c.lastDay : null }))
         .sort(byGrossThenName),
       // Seasonal customers who are silent: off season, not stopped.
       seasonal: named.filter((c) => c.seasonal && c.silent >= CARD_STOP_DAYS)
@@ -1739,11 +1745,11 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     // they pay another way now, and are listed under "Stopped paying by card".
     // Lost, seasonal and no-rhythm customers have nothing to compare against
     // either, and monthly payers are only compared when periods are months.
-    const tracked = named.filter((c) => !c.stopped && !c.lost && !c.seasonal && !c.noRhythm && !(c.note && c.note.cycle === 'monthly' && tf.period === 'week'));
+    const tracked = named.filter((c) => !c.stopped && !c.lost && !c.seasonal && !c.noRhythm && !(c.longCycle && tf.period === 'week'));
     // Tracking periods that are mostly unknown days are skipped for everyone.
     const noDataP = periods.map((p) => mostlyMissing(p.start, p.end));
     momentum.noData = periods.filter((p, i) => noDataP[i]).map((p) => p.label);
-    momentum.monthlySkipped = tf.period === 'week' ? named.filter((c) => c.note && c.note.cycle === 'monthly' && !c.stopped && !c.lost).length : 0;
+    momentum.monthlySkipped = tf.period === 'week' ? named.filter((c) => c.longCycle && !c.stopped && !c.lost).length : 0;
     // Trend: linear slope per period (the last 12 months for multi-year exports),
     // skipping periods the customer spent wholly off card.
     const t0 = tf.trendMax ? Math.max(0, P - tf.trendMax) : 0;
@@ -2195,8 +2201,66 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     return Math.round(t / DAY_MS);
   }
 
-  /** Parse a notes file. Returns { byKey: {normName: note}, count }. Throws with a
-   *  message naming each bad value and its line, so a typo is fixed, not guessed. */
+  /** Last day the Since text can mean: "2025" → 31 Dec 2025, "2026-09" → 30 Sep 2026. */
+  function sinceEnd(v) {
+    const m = /^(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?$/.exec(String(v || '').trim());
+    if (!m) return null;
+    const y = +m[1];
+    if (m[3]) return parseSince(v);
+    if (m[2]) return Math.round(Date.UTC(y, +m[2], 1) / DAY_MS) - 1;
+    return Math.round(Date.UTC(y + 1, 0, 1) / DAY_MS) - 1;
+  }
+
+  /** Edit distance, for typos such as "Cheuqe" or "spordaic". */
+  function distance(a, b) {
+    const d = Array.from({ length: a.length + 1 }, (_, i) => [i].concat(new Array(b.length).fill(0)));
+    for (let j = 1; j <= b.length; j++) d[0][j] = j;
+    for (let i = 1; i <= a.length; i++) {
+      for (let j = 1; j <= b.length; j++) {
+        d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+        if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+      }
+    }
+    return d[a.length][b.length];
+  }
+  const TABLES = { paysBy: PAYS_BY, cycle: CYCLE, status: STATUS };
+  const FIELD_NAME = { paysBy: 'Pays by', cycle: 'Cycle', status: 'Status' };
+  const UNKNOWN = ['unknown', 'not sure', 'dont know', 'don t know', 'n a', 'na', 'tbc', 'tbd', '?'];
+  const SEMI_ACTIVE = ['semi active', 'semiactive', 'partly active', 'part active', 'semi'];
+
+  /** What one cell means: a known value (own column first, then the others,
+   *  then typos), a cycle in days ("21 days"), or nothing. */
+  function classify(raw, own) {
+    const v = norm(raw);
+    if (!v || UNKNOWN.includes(v)) return { kind: 'blank' };
+    if (SEMI_ACTIVE.includes(v)) return { kind: 'value', field: 'status', value: 'active', why: 'active (still a customer, ordering irregularly)' };
+    const order = [own].concat(Object.keys(TABLES).filter((f) => f !== own));
+    for (const f of order) if (TABLES[f][v]) return { kind: 'value', field: f, value: TABLES[f][v] };
+    if (['fortnightly', 'biweekly', 'bi weekly', 'every two weeks', 'every 2 weeks'].includes(v)) return { kind: 'value', field: 'cycle', value: 'every 14 days', days: 14, why: 'cycle every 14 days' };
+    const days = /(\d{1,3})\s*(?:-\s*)?days?\b/.exec(v) || /\bnet\s*(\d{1,3})\b/.exec(v);
+    if (days) {
+      const n = +days[1];
+      if (n >= 1 && n <= 366) {
+        const value = n === 7 ? 'weekly' : n >= 28 && n <= 31 ? 'monthly' : 'every ' + n + ' days';
+        return { kind: 'value', field: 'cycle', value, days: n, why: 'cycle ' + value };
+      }
+    }
+    for (const f of order) {
+      for (const k of Object.keys(TABLES[f])) {
+        if (k.length >= 6 && distance(v, k) <= (k.length >= 8 ? 2 : 1)) return { kind: 'value', field: f, value: TABLES[f][k] };
+      }
+    }
+    return { kind: 'unknown' };
+  }
+
+  /**
+   * Parse a notes file. Returns { byKey: {normName: note}, count, interpreted, ignored }.
+   * Forgiving, and open about it: a value in the wrong column ("sporadic" under
+   * Status), a typo ("Cheuqe"), "semi-active", "unknown" or "on 21 days" are read
+   * as clearly meant and listed in `interpreted`; a value that can't be read is
+   * skipped (the rest of the row still counts) and listed in `ignored`. Only a
+   * file with no Customer column is rejected.
+   */
   function fromCSV(text, parseCSV) {
     const { rows } = parseCSV(String(text));
     if (!rows.length) throw new Error('The notes file is empty.');
@@ -2204,34 +2268,47 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     const col = (names) => h.findIndex((x) => names.includes(x));
     const ci = col(['customer', 'customer number', 'customer name', 'name']);
     if (ci < 0) throw new Error('The notes file needs a "Customer" column. Columns found: ' + rows[0].join(', '));
-    const pi = col(['pays by', 'payment method', 'pays']), yi = col(['cycle', 'rhythm', 'terms']), si = col(['status']), di = col(['since']), ni = col(['note', 'notes', 'comment']);
+    const cols = { paysBy: col(['pays by', 'payment method', 'pays']), cycle: col(['cycle', 'rhythm', 'terms']), status: col(['status']) };
+    const di = col(['since']), ni = col(['note', 'notes', 'comment']);
     const byKey = {};
-    const problems = [];
+    const interpreted = [], ignored = [];
     rows.slice(1).forEach((r, i) => {
       const line = i + 2;
       const name = String(r[ci] || '').trim().replace(/\s+/g, ' ');
       if (!name) return;
       const get = (k) => (k >= 0 ? String(r[k] || '').trim() : '');
-      const pick = (table, raw, what) => {
-        if (!raw) return null;
-        const v = table[norm(raw)];
-        if (!v) problems.push('line ' + line + ': ' + what + ' "' + raw + '" is not one of ' + [...new Set(Object.values(table))].join(', '));
-        return v || null;
-      };
-      const note = {
-        name, paysBy: pick(PAYS_BY, get(pi), 'Pays by'), cycle: pick(CYCLE, get(yi), 'Cycle'), status: pick(STATUS, get(si), 'Status'),
-        since: null, sinceText: get(di), note: get(ni),
-      };
-      const since = parseSince(get(di));
-      if (since === undefined) problems.push('line ' + line + ': Since "' + get(di) + '" should be YYYY-MM-DD or YYYY-MM');
-      else note.since = since;
+      const where = 'line ' + line + ' (' + name + ')';
+      const note = { name, paysBy: null, cycle: null, cycleDays: null, status: null, since: null, sinceText: '', sinceEnd: null, note: get(ni) };
+      const set = { paysBy: false, cycle: false, status: false };
+      // Each column's own value first, so a value that strays into another column never overrides it.
+      const cells = Object.keys(cols).map((f) => ({ f, raw: get(cols[f]), c: classify(get(cols[f]), f) }));
+      cells.sort((a, b) => (a.c.field === a.f ? 0 : 1) - (b.c.field === b.f ? 0 : 1));
+      for (const { f, raw, c } of cells) {
+        if (c.kind === 'blank') { if (raw && norm(raw) !== '') interpreted.push(where + ': ' + FIELD_NAME[f] + ' "' + raw + '" read as blank'); continue; }
+        if (c.kind === 'unknown') { ignored.push(where + ': ' + FIELD_NAME[f] + ' "' + raw + '" is not one of ' + [...new Set(Object.values(TABLES[f]))].join(', ')); continue; }
+        if (set[c.field]) { ignored.push(where + ': ' + FIELD_NAME[f] + ' "' + raw + '" would also set ' + FIELD_NAME[c.field] + ', which is already given'); continue; }
+        set[c.field] = true;
+        note[c.field] = c.value;
+        if (c.days) note.cycleDays = c.days;
+        const exact = c.field === f && (norm(raw) === norm(c.value) || TABLES[f][norm(raw)] === c.value);
+        if (!exact) interpreted.push(where + ': ' + FIELD_NAME[f] + ' "' + raw + '" read as ' + (c.why || (c.field === f ? '' : FIELD_NAME[c.field] + ' ') + c.value));
+        if (c.days && !/^\s*\d{1,3}\s*days?\s*$/i.test(raw)) {
+          const rest = raw.replace(/,?\s*(on\s+)?\d{1,3}\s*(-\s*)?days?\b/i, '').trim();
+          if (rest) note.note = (rest + (note.note ? ' · ' + note.note : '')).trim();
+        }
+      }
+      const sinceRaw = get(di);
+      if (sinceRaw) {
+        const since = parseSince(sinceRaw);
+        if (since === undefined) ignored.push(where + ': Since "' + sinceRaw + '" should be YYYY-MM-DD, YYYY-MM or YYYY');
+        else { note.since = since; note.sinceText = sinceRaw; note.sinceEnd = sinceEnd(sinceRaw); }
+      }
       if (note.paysBy === 'card') note.paysBy = null;
       if (note.status === 'active') note.status = null;
       if (!note.paysBy && !note.cycle && !note.status && !note.note && note.since == null) return; // nothing said
       byKey[norm(name)] = note;
     });
-    if (problems.length) throw new Error('The notes file has ' + problems.length + ' problem' + (problems.length === 1 ? '' : 's') + ': ' + problems.slice(0, 5).join('; ') + (problems.length > 5 ? '; …' : ''));
-    return { byKey, count: Object.keys(byKey).length };
+    return { byKey, count: Object.keys(byKey).length, interpreted, ignored };
   }
 
   function toCSV(byKey) {
@@ -2253,7 +2330,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     return bits.join(' · ');
   }
 
-  const api = { norm, fromCSV, toCSV, parseSince, describe, COLUMNS, CYCLE_DAYS, PAYS_BY, CYCLE, STATUS };
+  const api = { norm, fromCSV, toCSV, parseSince, sinceEnd, describe, distance, COLUMNS, CYCLE_DAYS, PAYS_BY, CYCLE, STATUS };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.CCNotes = api;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -3178,7 +3255,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
   const state = {
     rows: null, quality: null, fileName: '', fileSize: 0,
     // Every export loaded (the processor caps each at 90 days), parsed separately, then combined.
-    files: [], coverage: null, loadWarning: '',
+    files: [], coverage: null, loadWarning: '', notesReport: null,
     from: null, to: null, preset: 'all', unit: 'auto', status: 'all', threshold: 0.25,
     slopesAll: false, cadenceAll: false, segment: null, analysis: null,
     // Customer groups: { "label in export": "customer it belongs to" }, kept in this browser.
@@ -3513,6 +3590,7 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
         { label: 'Review customer groups', onclick: openGroups }));
     }
     if (state.loadWarning) box.append(notice('warn', state.loadWarning));
+    if (state.notesReport && state.notesReport.ignored.length) box.append(notice('warn', 'Customer notes: ' + plural(state.notesReport.ignored.length, 'value') + ' in ' + state.notesReport.file + ' could not be read and ' + (state.notesReport.ignored.length === 1 ? 'was' : 'were') + ' skipped (' + state.notesReport.ignored.slice(0, 2).join('; ') + (state.notesReport.ignored.length > 2 ? '; …' : '') + ').', { label: 'Customer notes', onclick: openNotes }));
     const cov = state.coverage;
     if (cov && cov.files.length > 1) {
       const dup = cov.files.reduce((n, f) => n + f.duplicates, 0);
@@ -3736,14 +3814,16 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
       { key: 'name', label: 'Customer', name: true, fmt: (r) => nameCell(r.name) },
       { key: 'status', label: 'Status', fmt: (r) => r.status },
       { key: 'since', label: 'Since', num: true, fmt: (r) => r.sinceText || '—', sort: (r) => r.since == null ? -Infinity : r.since },
-      { key: 'lastDay', label: 'Last card payment', num: true, fmt: (r) => fmtDay(r.lastDay) },
+      { key: 'lastDay', label: 'Last card payment', num: true, fmt: (r) => [fmtDay(r.lastDay), r.paidAfter ? el('span', { class: 'status-pill warn', style: 'margin-left:6px', title: 'Your note says ' + r.status + ' since ' + r.sinceText + ', but this card payment came after that. Check the date or the status.', text: 'after “since”' }) : null] },
       { key: 'gross', label: 'Card revenue in range', num: true, fmt: (r) => F.money(r.gross) },
       { key: 'count', label: 'Payments', num: true },
       { key: 'note', label: 'Note', fmt: (r) => el('span', { class: 'why', text: r.note || '' }) },
     ], cs.lost, { sort: { key: 'gross', dir: -1 }, empty: anyNotes ? 'No customer in this range is marked stopped ordering or closed in your notes.' : 'No customer notes loaded. Use Customer notes (top right) to record who stopped ordering, who pays by EFT or cheque, and who pays monthly or seasonally.', good: anyNotes }));
     if (cs.lost.length) {
       const tot = cs.lost.reduce((x, r) => x + r.gross, 0);
-      cap.textContent = plural(cs.lost.length, 'customer') + ' with ' + F.money(tot) + ' of card revenue in this range. They are left out of every other customer list; their history still counts in totals and rankings.';
+      const odd = cs.lost.filter((r) => r.paidAfter);
+      cap.textContent = plural(cs.lost.length, 'customer') + ' with ' + F.money(tot) + ' of card revenue in this range. They are left out of every other customer list; their history still counts in totals and rankings.' +
+        (odd.length ? ' ' + odd.map((r) => r.name).join(', ') + (odd.length > 1 ? ' paid' : ' paid') + ' by card after the “since” date in your notes: check the date or the status.' : '');
     }
   }
 
@@ -4238,7 +4318,8 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
         rfmSegments: a.rfm ? Object.fromEntries(a.rfm.segments.map((s) => [s.name, s.count])) : null,
         attention: a.momentum.attention.map((x) => x.name), threshold: a.threshold,
         stopped: a.cardStop.stopped.map((x) => ({ name: x.name, lastDay: M.isoDate(x.lastDay), gross: x.gross, declared: !!x.declared })),
-        lost: a.cardStop.lost.map((x) => ({ name: x.name, status: x.status, since: x.sinceText || '' })), seasonalOff: a.cardStop.seasonal.map((x) => x.name),
+        lost: a.cardStop.lost.map((x) => ({ name: x.name, status: x.status, since: x.sinceText || '', paidAfter: x.paidAfter == null ? null : M.isoDate(x.paidAfter) })),
+        notesRead: state.notesReport ? { interpreted: state.notesReport.interpreted.length, ignored: state.notesReport.ignored.length } : null, seasonalOff: a.cardStop.seasonal.map((x) => x.name),
         notes: { loaded: Object.keys(state.notes).length, applied: a.notesApplied, monthlySkipped: a.momentum.monthlySkipped },
         theme: document.documentElement.dataset.theme || 'light', view: state.view,
         coverage: state.coverage ? { files: state.coverage.files.map((f) => ({ name: f.name, from: f.from == null ? null : M.isoDate(f.from), to: f.to == null ? null : M.isoDate(f.to), rows: f.rows, kept: f.kept })),
@@ -4448,11 +4529,14 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
     const nameIn = el('input', { type: 'text', list: 'noteNames', placeholder: 'Customer name (as shown in the dashboard)', 'aria-label': 'Customer' });
     const sel = (opts, label) => el('select', { 'aria-label': label }, opts.map(([v, t]) => el('option', { value: v, text: t })));
     const paysIn = sel([['', 'card'], ['EFT', 'EFT'], ['cheque', 'cheque'], ['mixed', 'mixed']], 'Pays by');
-    const cycleIn = sel([['', 'measured'], ['weekly', 'weekly'], ['monthly', 'monthly'], ['seasonal', 'seasonal'], ['sporadic', 'sporadic'], ['on request', 'on request']], 'Cycle');
+    const cycleIn = sel([['', 'measured'], ['weekly', 'weekly'], ['every 14 days', 'every 14 days'], ['every 21 days', 'every 21 days'], ['monthly', 'monthly'], ['seasonal', 'seasonal'], ['sporadic', 'sporadic'], ['on request', 'on request']], 'Cycle');
     const statusIn = sel([['', 'active'], ['stopped ordering', 'stopped ordering'], ['closed', 'closed']], 'Status');
     const sinceIn = el('input', { type: 'text', placeholder: 'YYYY-MM', 'aria-label': 'Since', pattern: '\\d{4}(-\\d{1,2}(-\\d{1,2})?)?' });
     const textIn = el('input', { type: 'text', placeholder: 'Note (optional)', 'aria-label': 'Note' });
-    const fill = (n) => { nameIn.value = n.name; paysIn.value = n.paysBy || ''; cycleIn.value = n.cycle || ''; statusIn.value = n.status || ''; sinceIn.value = n.sinceText || ''; textIn.value = n.note || ''; };
+    const fill = (n) => {
+      if (n.cycle && ![...cycleIn.options].some((o) => o.value === n.cycle)) cycleIn.append(el('option', { value: n.cycle, text: n.cycle }));
+      nameIn.value = n.name; paysIn.value = n.paysBy || ''; cycleIn.value = n.cycle || ''; statusIn.value = n.status || ''; sinceIn.value = n.sinceText || ''; textIn.value = n.note || '';
+    };
     // Picking a customer who already has a note loads it, unless other fields were already chosen.
     const untouched = () => !paysIn.value && !cycleIn.value && !statusIn.value && !sinceIn.value.trim() && !textIn.value.trim();
     nameIn.addEventListener('change', () => { const n = noteOf(nameIn.value); if (n && untouched()) fill(Object.assign({}, n, { name: nameIn.value })); });
@@ -4460,8 +4544,9 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
       const name = nameIn.value.trim().replace(/\s+/g, ' ');
       if (!name) { $('noteNote').textContent = 'Type or pick the customer name first.'; return; }
       const since = N.parseSince(sinceIn.value);
-      if (since === undefined) { $('noteNote').textContent = 'Since should be YYYY-MM-DD or YYYY-MM.'; return; }
-      const note = { name, paysBy: paysIn.value || null, cycle: cycleIn.value || null, status: statusIn.value || null, since, sinceText: sinceIn.value.trim(), note: textIn.value.trim() };
+      if (since === undefined) { $('noteNote').textContent = 'Since should be YYYY-MM-DD, YYYY-MM or YYYY.'; return; }
+      const cycleDays = /^every (\d+) days$/.exec(cycleIn.value || '');
+      const note = { name, paysBy: paysIn.value || null, cycle: cycleIn.value || null, cycleDays: cycleDays ? +cycleDays[1] : null, status: statusIn.value || null, since, sinceText: sinceIn.value.trim(), sinceEnd: N.sinceEnd(sinceIn.value.trim()), note: textIn.value.trim() };
       if (!note.paysBy && !note.cycle && !note.status && !note.note && since == null) { delete state.notes[N.norm(name)]; commitNotes('Removed the note for “' + name + '”.'); return; }
       state.notes[N.norm(name)] = note;
       commitNotes('Saved the note for “' + name + '”' + (customers.length && !customers.some((c) => N.norm(c) === N.norm(name)) ? ' (no customer with that name in this file; check the spelling)' : '') + '.');
@@ -4471,6 +4556,14 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
       el('label', null, 'Customer', nameIn), el('label', null, 'Pays by', paysIn), el('label', null, 'Cycle', cycleIn),
       el('label', null, 'Status', statusIn), el('label', null, 'Since', sinceIn), el('label', null, 'Note', textIn), saveBtn));
 
+    // How the last loaded file was read: anything interpreted or skipped, by line.
+    const rep = state.notesReport;
+    if (rep && (rep.interpreted.length || rep.ignored.length)) {
+      const box = el('div', { class: 'grp-card' }, el('strong', { text: 'How your file was read (' + rep.file + ')' }));
+      if (rep.interpreted.length) box.append(el('p', { class: 'mut', style: 'margin:6px 0 2px', text: 'Read as you clearly meant them (save the notes file to keep them this way):' }), el('ul', { class: 'grp-reasons' }, rep.interpreted.map((x) => el('li', { text: x }))));
+      if (rep.ignored.length) box.append(el('p', { class: 'neg', style: 'margin:6px 0 2px', text: 'Skipped (the rest of each row still counts):' }), el('ul', { class: 'grp-reasons' }, rep.ignored.map((x) => el('li', { text: x }))));
+      add.append(box);
+    }
     // Current notes
     const notes = Object.values(state.notes).sort((a, b) => a.name.localeCompare(b.name));
     list.append(el('h3', { text: 'Your notes (' + notes.length + ')' }));
@@ -4518,9 +4611,10 @@ try { if (localStorage.getItem('ccdash.theme.v1') === 'dark') document.documentE
       e.target.value = '';
       if (!f) return;
       try {
-        const { byKey, count } = N.fromCSV(await f.text(), P.parseCSV);
+        const { byKey, count, interpreted, ignored } = N.fromCSV(await f.text(), P.parseCSV);
         Object.assign(state.notes, byKey);
-        commitNotes('Loaded ' + plural(count, 'note') + ' from ' + f.name + '.');
+        state.notesReport = { file: f.name, count, interpreted, ignored };
+        commitNotes('Loaded ' + plural(count, 'note') + ' from ' + f.name + '.' + (interpreted.length ? ' ' + plural(interpreted.length, 'value') + ' read as you meant them' : '') + (ignored.length ? (interpreted.length ? ',' : '') + ' ' + plural(ignored.length, 'value') + ' skipped' : '') + (interpreted.length || ignored.length ? ': see “How your file was read”.' : ''));
       } catch (err) { $('noteNote').textContent = err.message; }
     });
     $('noteClear').addEventListener('click', () => {

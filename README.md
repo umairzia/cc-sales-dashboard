@@ -167,11 +167,14 @@ browser like groups) records it, and every list applies it:
 | Column | Values | Effect |
 |---|---|---|
 | Pays by | card, **EFT**, **cheque**, **mixed** | EFT / cheque: stopped paying by card at once, with the reason shown; mixed: never flagged for a drop or lateness |
-| Cycle | measured, **weekly**, **monthly**, **seasonal**, **sporadic**, **on request** | a declared cycle replaces the measured gap; monthly payers are compared month to month and count as stopped only after 3 cycles; seasonal customers are "off season", never stopped; sporadic / on request have no rhythm to be late against |
+| Cycle | measured, **weekly**, **every *N* days**, **monthly**, **seasonal**, **sporadic**, **on request** | a declared cycle replaces the measured gap; customers on cycles of 14+ days are compared month to month and count as stopped only after 3 missed cycles; seasonal customers are "off season", never stopped; sporadic / on request have no rhythm to be late against |
 | Status | active, **stopped ordering**, **closed** | moves the customer to a **Lost customers** list as of *Since*, and out of every other list |
 | Since, Note | a date, free text | shown in the tables |
 
-A value outside these lists is an error that names the line, never a guess.
+Hand-typed values are read as clearly meant (a typo such as `Cheuqe`, `sporadic`
+under Status, `semi-active`, `on 21 days` as a 21-day cycle), and the dialog lists
+every value it interpreted or skipped, by line. A lost customer who paid by card
+after the date in *Since* is flagged for a check.
 
 ![Customer notes dialog](docs/screenshots/customer-notes.png)
 

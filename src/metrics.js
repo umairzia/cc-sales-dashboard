@@ -469,8 +469,11 @@
       c.silent = to - c.lastDay - missingIn(c.lastDay + 1, to);   // days since the last card payment, unknown days not counted
       const n = c.note || {};
       c.lost = !!n.status;
-      c.declaredGap = n.cycle && CYCLE_DAYS[n.cycle] ? CYCLE_DAYS[n.cycle] : null;
-      c.stopDays = n.cycle === 'monthly' ? Math.max(CARD_STOP_DAYS, Math.round(3 * CYCLE_DAYS.monthly)) : CARD_STOP_DAYS;
+      // A declared cycle (weekly, monthly, "every 21 days") replaces the measured
+      // gap; a customer on a long cycle only counts as stopped after 3 missed cycles.
+      c.declaredGap = n.cycle && CYCLE_DAYS[n.cycle] ? CYCLE_DAYS[n.cycle] : n.cycleDays || null;
+      c.stopDays = c.declaredGap ? Math.max(CARD_STOP_DAYS, Math.round(3 * c.declaredGap)) : CARD_STOP_DAYS;
+      c.longCycle = !!c.declaredGap && c.declaredGap >= 14;
       c.offCardMethod = n.paysBy === 'EFT' || n.paysBy === 'cheque';
       c.seasonal = n.cycle === 'seasonal';
       c.noRhythm = n.cycle === 'sporadic' || n.cycle === 'on request' || n.paysBy === 'mixed';
@@ -491,7 +494,10 @@
         .sort(byGrossThenName),
       // Lost customers: the business says they stopped ordering or closed.
       lost: named.filter((c) => c.lost)
-        .map((c) => ({ name: c.name, status: c.note.status, since: c.note.since, sinceText: c.note.sinceText, gross: c.gross / 100, count: c.count, lastDay: c.lastDay, daysSince: to - c.lastDay, note: c.note.note }))
+        // paidAfter: a card payment after the end of the Since period ("2025" ends 31 Dec 2025),
+        // which contradicts the note and is worth a check.
+        .map((c) => ({ name: c.name, status: c.note.status, since: c.note.since, sinceText: c.note.sinceText, gross: c.gross / 100, count: c.count, lastDay: c.lastDay, daysSince: to - c.lastDay, note: c.note.note,
+          paidAfter: c.note.sinceEnd != null && c.lastDay > c.note.sinceEnd ? c.lastDay : null }))
         .sort(byGrossThenName),
       // Seasonal customers who are silent: off season, not stopped.
       seasonal: named.filter((c) => c.seasonal && c.silent >= CARD_STOP_DAYS)
@@ -551,11 +557,11 @@
     // they pay another way now, and are listed under "Stopped paying by card".
     // Lost, seasonal and no-rhythm customers have nothing to compare against
     // either, and monthly payers are only compared when periods are months.
-    const tracked = named.filter((c) => !c.stopped && !c.lost && !c.seasonal && !c.noRhythm && !(c.note && c.note.cycle === 'monthly' && tf.period === 'week'));
+    const tracked = named.filter((c) => !c.stopped && !c.lost && !c.seasonal && !c.noRhythm && !(c.longCycle && tf.period === 'week'));
     // Tracking periods that are mostly unknown days are skipped for everyone.
     const noDataP = periods.map((p) => mostlyMissing(p.start, p.end));
     momentum.noData = periods.filter((p, i) => noDataP[i]).map((p) => p.label);
-    momentum.monthlySkipped = tf.period === 'week' ? named.filter((c) => c.note && c.note.cycle === 'monthly' && !c.stopped && !c.lost).length : 0;
+    momentum.monthlySkipped = tf.period === 'week' ? named.filter((c) => c.longCycle && !c.stopped && !c.lost).length : 0;
     // Trend: linear slope per period (the last 12 months for multi-year exports),
     // skipping periods the customer spent wholly off card.
     const t0 = tf.trendMax ? Math.max(0, P - tf.trendMax) : 0;

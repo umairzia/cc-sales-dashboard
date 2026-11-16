@@ -353,8 +353,9 @@ test('customer notes: lost, EFT, monthly, seasonal and sporadic customers are tr
   assert.equal(byKey['on eft'].paysBy, 'EFT');
   assert.equal(byKey['monthly late'].cycle, 'monthly');
   assert.equal(byKey['retired'].since, d('01/05/2026'));
-  assert.throws(() => N.fromCSV('Customer,Cycle\n"X","fortnightly"', P.parseCSV), /Cycle "fortnightly" is not one of/);
-  assert.throws(() => N.fromCSV('Customer,Since\n"X","June 2026"', P.parseCSV), /Since "June 2026"/);
+  assert.equal(N.fromCSV('Customer,Cycle\n"X","fortnightly"', P.parseCSV).byKey.x.cycle, 'every 14 days');
+  assert.match(N.fromCSV('Customer,Cycle,Since\n"X","weekly","June 2026"', P.parseCSV).ignored[0], /Since "June 2026"/);
+  assert.match(N.fromCSV('Customer,Cycle\n"X","whenever"', P.parseCSV).ignored[0], /Cycle "whenever" is not one of/);
   assert.equal(N.fromCSV(N.toCSV(byKey), P.parseCSV).count, 6);  // round-trips
 
   const plain = M.analyse(rows, {});
@@ -455,4 +456,50 @@ test('a stretch with no data at all is unknown, not silence: no false breaks, st
   // Without the hole logic the weekly customers would show a 40+ day break.
   const naive = M.analyse(rows, { missing: [] });
   assert.equal(naive.cadence.find((x) => x.name === 'Weekly').avgGap > a.cadence.find((x) => x.name === 'Weekly').avgGap, true);
+});
+
+test('notes files are read as clearly meant: typos, values in the wrong column, "semi-active", "21 days"', () => {
+  const csv = [
+    'Customer,Pays by,Cycle,Status,Since,Note',
+    'A,Cheuqe,,,,',                                   // typo
+    'B,card,,sporadic,,',                             // a cycle in the Status column
+    'C,card,,spordaic,,',                             // ...misspelt
+    'D,card,sporadic,Semi-active,,',                  // still a customer
+    'E,card,,"new customer, on 21 days",,terms',      // a cycle in days, the rest kept as a note
+    'F,unknown,,stopped ordering,2025,',              // "unknown" = blank; Since as a year
+    'G,card,monthly,sporadic,,',                      // the Cycle column wins; the stray value is skipped
+    'H,fixed,,,,',                                    // short words are never fuzzy-matched ("fixed" is not "mixed")
+    'I,card,weekly,active,June,',                     // an unreadable Since is skipped, the rest kept
+  ].join('\n');
+  const r = N.fromCSV(csv, P.parseCSV);
+  const k = r.byKey;
+  assert.equal(k.a.paysBy, 'cheque');
+  assert.equal(k.b.cycle, 'sporadic');
+  assert.equal(k.c.cycle, 'sporadic');
+  assert.deepEqual([k.d.status, k.d.cycle], [null, 'sporadic']);
+  assert.deepEqual([k.e.cycle, k.e.cycleDays, k.e.note], ['every 21 days', 21, 'new customer · terms']);
+  assert.deepEqual([k.f.paysBy, k.f.status, k.f.sinceText, M.isoDate(k.f.sinceEnd)], [null, 'stopped ordering', '2025', '2025-12-31']);
+  assert.deepEqual([k.g.cycle, k.g.status], ['monthly', null]);
+  assert.equal(k.h, undefined);
+  assert.deepEqual([k.i.cycle, k.i.since], ['weekly', null]);
+  assert.equal(r.interpreted.length, 6);
+  assert.deepEqual(r.ignored.map((x) => x.split(':')[0]), ['line 8 (G)', 'line 9 (H)', 'line 10 (I)']);
+  // What the dashboard saves reads back unchanged, with nothing to report.
+  const back = N.fromCSV(N.toCSV(k), P.parseCSV);
+  assert.deepEqual([back.count, back.interpreted.length, back.ignored.length], [r.count, 0, 0]);
+
+  // A 21-day cycle replaces the measured gap and stops only after 3 missed cycles (63 days).
+  const d = (s) => P.parseDate(s).day;
+  const from = d('05/01/2026'), to = from + 175;
+  const rows = [];
+  for (let day = from; day <= to; day += 7) rows.push({ day, second: rows.length, line: rows.length, customer: 'Weekly', oneTime: false, cents: 100, card: 'VISA', status: 'Batched' });
+  for (let day = to - 61; day >= from; day -= 21) rows.push({ day, second: rows.length, line: rows.length, customer: 'E', oneTime: false, cents: 100, card: 'VISA', status: 'Batched' });   // last paid 61 days before the end
+  rows.sort((x, y) => x.day - y.day || x.second - y.second);
+  const a = M.analyse(rows, { notes: k });
+  assert.equal(a.cadence.find((x) => x.name === 'E').avgGap, 21);
+  assert.equal(a.cardStop.stopped.some((x) => x.name === 'E'), false);   // 61+ days silent, but under 63
+  assert.equal(M.analyse(rows, {}).cardStop.stopped.some((x) => x.name === 'E'), true);
+  // A lost customer who paid by card after the end of their Since period is flagged.
+  const lostRows = rows.concat([{ day: d('20/01/2026'), second: 999, line: 999, customer: 'F', oneTime: false, cents: 100, card: 'VISA', status: 'Batched' }]).sort((x, y) => x.day - y.day || x.second - y.second);
+  assert.equal(M.isoDate(M.analyse(lostRows, { notes: k }).cardStop.lost.find((x) => x.name === 'F').paidAfter), '2026-01-20');
 });

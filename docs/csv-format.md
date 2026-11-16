@@ -231,10 +231,25 @@ returning after a break.
 ## Customer notes
 
 `customer-notes.csv` carries what the export can't show, one row per customer,
-matched by name after customer groups (case and punctuation ignored). Blank
-cells mean "work it out from the data". Values are normalised (`e-transfer` →
-EFT, `30 day terms` → monthly, `shut down` → closed); anything else is rejected
-with the line number.
+matched by name after customer groups (case and punctuation ignored); a note
+under an export name applies to the customer that name is grouped into. Blank
+cells mean "work it out from the data".
+
+Files are edited by hand, so values are read as clearly meant, and the dashboard
+lists every value it interpreted or skipped, by line (Customer notes → *How your
+file was read*):
+
+- synonyms: `e-transfer` → EFT, `30 day terms` → monthly, `shut down` → closed;
+- a value in another column: `sporadic` under Status is the cycle;
+- typos of words of 6+ letters: `Cheuqe` → cheque, `spordaic` → sporadic;
+- `semi-active` → active; `unknown`, `n/a`, `tbc` → blank;
+- a cycle in days: `21 days`, `net 21`, `on 21 days` → every 21 days (7 → weekly,
+  28–31 → monthly; `fortnightly` → every 14 days); other words in the cell are
+  kept as part of the note.
+
+A value that can't be read is skipped and the rest of the row still counts. When
+two columns give the same field, the column's own value wins. Only a file with no
+Customer column is rejected.
 
 ```csv
 Customer,Pays by,Cycle,Status,Since,Note
@@ -246,7 +261,7 @@ Customer,Pays by,Cycle,Status,Since,Note
 | Column | Values | Effect on the lists |
 |---|---|---|
 | Pays by | card (default), EFT, cheque, mixed | EFT / cheque → stopped paying by card as of the last card payment, no 60-day wait, reason shown. mixed → never in Needs attention or Overdue (card share varies); 60-day stop still applies |
-| Cycle | measured (default), weekly, monthly, seasonal, sporadic, on request | weekly / monthly replace the measured gap. monthly → stopped only after `max(60, 3 × 30.44)` = 91 days; compared only when tracking periods are months. seasonal → never stopped, overdue or in Needs attention / trends; listed as off season after 60 days. sporadic / on request → no rhythm: never overdue, in Needs attention or trends; 60-day stop still applies |
-| Status | active (default), stopped ordering, closed | → **Lost customers**, with *Since*; left out of stopped, back-on-card, cadence, trends and Needs attention. History still counts in totals, rankings, RFM and acquisition |
-| Since | `YYYY-MM-DD` or `YYYY-MM` | shown; not used in calculations |
+| Cycle | measured (default), weekly, every *N* days, monthly, seasonal, sporadic, on request | a declared cycle replaces the measured gap, and the customer counts as stopped only after `max(60, 3 × cycle)` days (monthly 91, every 21 days 63). Cycles of 14 days or more are compared only when tracking periods are months. seasonal → never stopped, overdue or in Needs attention / trends; listed as off season after 60 days. sporadic / on request → no rhythm: never overdue, in Needs attention or trends; 60-day stop still applies |
+| Status | active (default), stopped ordering, closed | → **Lost customers**, with *Since*; left out of stopped, back-on-card, cadence, trends and Needs attention. History still counts in totals, rankings, RFM and acquisition. A lost customer with a card payment after the end of the *Since* period (`2025` ends 31 Dec 2025) is flagged "after since" |
+| Since | `YYYY-MM-DD`, `YYYY-MM` or `YYYY` | shown, and used only for the "after since" check |
 | Note | free text | shown next to the name |

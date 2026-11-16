@@ -9,7 +9,7 @@
   const state = {
     rows: null, quality: null, fileName: '', fileSize: 0,
     // Every export loaded (the processor caps each at 90 days), parsed separately, then combined.
-    files: [], coverage: null, loadWarning: '',
+    files: [], coverage: null, loadWarning: '', notesReport: null,
     from: null, to: null, preset: 'all', unit: 'auto', status: 'all', threshold: 0.25,
     slopesAll: false, cadenceAll: false, segment: null, analysis: null,
     // Customer groups: { "label in export": "customer it belongs to" }, kept in this browser.
@@ -344,6 +344,7 @@
         { label: 'Review customer groups', onclick: openGroups }));
     }
     if (state.loadWarning) box.append(notice('warn', state.loadWarning));
+    if (state.notesReport && state.notesReport.ignored.length) box.append(notice('warn', 'Customer notes: ' + plural(state.notesReport.ignored.length, 'value') + ' in ' + state.notesReport.file + ' could not be read and ' + (state.notesReport.ignored.length === 1 ? 'was' : 'were') + ' skipped (' + state.notesReport.ignored.slice(0, 2).join('; ') + (state.notesReport.ignored.length > 2 ? '; …' : '') + ').', { label: 'Customer notes', onclick: openNotes }));
     const cov = state.coverage;
     if (cov && cov.files.length > 1) {
       const dup = cov.files.reduce((n, f) => n + f.duplicates, 0);
@@ -567,14 +568,16 @@
       { key: 'name', label: 'Customer', name: true, fmt: (r) => nameCell(r.name) },
       { key: 'status', label: 'Status', fmt: (r) => r.status },
       { key: 'since', label: 'Since', num: true, fmt: (r) => r.sinceText || '—', sort: (r) => r.since == null ? -Infinity : r.since },
-      { key: 'lastDay', label: 'Last card payment', num: true, fmt: (r) => fmtDay(r.lastDay) },
+      { key: 'lastDay', label: 'Last card payment', num: true, fmt: (r) => [fmtDay(r.lastDay), r.paidAfter ? el('span', { class: 'status-pill warn', style: 'margin-left:6px', title: 'Your note says ' + r.status + ' since ' + r.sinceText + ', but this card payment came after that. Check the date or the status.', text: 'after “since”' }) : null] },
       { key: 'gross', label: 'Card revenue in range', num: true, fmt: (r) => F.money(r.gross) },
       { key: 'count', label: 'Payments', num: true },
       { key: 'note', label: 'Note', fmt: (r) => el('span', { class: 'why', text: r.note || '' }) },
     ], cs.lost, { sort: { key: 'gross', dir: -1 }, empty: anyNotes ? 'No customer in this range is marked stopped ordering or closed in your notes.' : 'No customer notes loaded. Use Customer notes (top right) to record who stopped ordering, who pays by EFT or cheque, and who pays monthly or seasonally.', good: anyNotes }));
     if (cs.lost.length) {
       const tot = cs.lost.reduce((x, r) => x + r.gross, 0);
-      cap.textContent = plural(cs.lost.length, 'customer') + ' with ' + F.money(tot) + ' of card revenue in this range. They are left out of every other customer list; their history still counts in totals and rankings.';
+      const odd = cs.lost.filter((r) => r.paidAfter);
+      cap.textContent = plural(cs.lost.length, 'customer') + ' with ' + F.money(tot) + ' of card revenue in this range. They are left out of every other customer list; their history still counts in totals and rankings.' +
+        (odd.length ? ' ' + odd.map((r) => r.name).join(', ') + (odd.length > 1 ? ' paid' : ' paid') + ' by card after the “since” date in your notes: check the date or the status.' : '');
     }
   }
 
@@ -1069,7 +1072,8 @@
         rfmSegments: a.rfm ? Object.fromEntries(a.rfm.segments.map((s) => [s.name, s.count])) : null,
         attention: a.momentum.attention.map((x) => x.name), threshold: a.threshold,
         stopped: a.cardStop.stopped.map((x) => ({ name: x.name, lastDay: M.isoDate(x.lastDay), gross: x.gross, declared: !!x.declared })),
-        lost: a.cardStop.lost.map((x) => ({ name: x.name, status: x.status, since: x.sinceText || '' })), seasonalOff: a.cardStop.seasonal.map((x) => x.name),
+        lost: a.cardStop.lost.map((x) => ({ name: x.name, status: x.status, since: x.sinceText || '', paidAfter: x.paidAfter == null ? null : M.isoDate(x.paidAfter) })),
+        notesRead: state.notesReport ? { interpreted: state.notesReport.interpreted.length, ignored: state.notesReport.ignored.length } : null, seasonalOff: a.cardStop.seasonal.map((x) => x.name),
         notes: { loaded: Object.keys(state.notes).length, applied: a.notesApplied, monthlySkipped: a.momentum.monthlySkipped },
         theme: document.documentElement.dataset.theme || 'light', view: state.view,
         coverage: state.coverage ? { files: state.coverage.files.map((f) => ({ name: f.name, from: f.from == null ? null : M.isoDate(f.from), to: f.to == null ? null : M.isoDate(f.to), rows: f.rows, kept: f.kept })),
@@ -1279,11 +1283,14 @@
     const nameIn = el('input', { type: 'text', list: 'noteNames', placeholder: 'Customer name (as shown in the dashboard)', 'aria-label': 'Customer' });
     const sel = (opts, label) => el('select', { 'aria-label': label }, opts.map(([v, t]) => el('option', { value: v, text: t })));
     const paysIn = sel([['', 'card'], ['EFT', 'EFT'], ['cheque', 'cheque'], ['mixed', 'mixed']], 'Pays by');
-    const cycleIn = sel([['', 'measured'], ['weekly', 'weekly'], ['monthly', 'monthly'], ['seasonal', 'seasonal'], ['sporadic', 'sporadic'], ['on request', 'on request']], 'Cycle');
+    const cycleIn = sel([['', 'measured'], ['weekly', 'weekly'], ['every 14 days', 'every 14 days'], ['every 21 days', 'every 21 days'], ['monthly', 'monthly'], ['seasonal', 'seasonal'], ['sporadic', 'sporadic'], ['on request', 'on request']], 'Cycle');
     const statusIn = sel([['', 'active'], ['stopped ordering', 'stopped ordering'], ['closed', 'closed']], 'Status');
     const sinceIn = el('input', { type: 'text', placeholder: 'YYYY-MM', 'aria-label': 'Since', pattern: '\\d{4}(-\\d{1,2}(-\\d{1,2})?)?' });
     const textIn = el('input', { type: 'text', placeholder: 'Note (optional)', 'aria-label': 'Note' });
-    const fill = (n) => { nameIn.value = n.name; paysIn.value = n.paysBy || ''; cycleIn.value = n.cycle || ''; statusIn.value = n.status || ''; sinceIn.value = n.sinceText || ''; textIn.value = n.note || ''; };
+    const fill = (n) => {
+      if (n.cycle && ![...cycleIn.options].some((o) => o.value === n.cycle)) cycleIn.append(el('option', { value: n.cycle, text: n.cycle }));
+      nameIn.value = n.name; paysIn.value = n.paysBy || ''; cycleIn.value = n.cycle || ''; statusIn.value = n.status || ''; sinceIn.value = n.sinceText || ''; textIn.value = n.note || '';
+    };
     // Picking a customer who already has a note loads it, unless other fields were already chosen.
     const untouched = () => !paysIn.value && !cycleIn.value && !statusIn.value && !sinceIn.value.trim() && !textIn.value.trim();
     nameIn.addEventListener('change', () => { const n = noteOf(nameIn.value); if (n && untouched()) fill(Object.assign({}, n, { name: nameIn.value })); });
@@ -1291,8 +1298,9 @@
       const name = nameIn.value.trim().replace(/\s+/g, ' ');
       if (!name) { $('noteNote').textContent = 'Type or pick the customer name first.'; return; }
       const since = N.parseSince(sinceIn.value);
-      if (since === undefined) { $('noteNote').textContent = 'Since should be YYYY-MM-DD or YYYY-MM.'; return; }
-      const note = { name, paysBy: paysIn.value || null, cycle: cycleIn.value || null, status: statusIn.value || null, since, sinceText: sinceIn.value.trim(), note: textIn.value.trim() };
+      if (since === undefined) { $('noteNote').textContent = 'Since should be YYYY-MM-DD, YYYY-MM or YYYY.'; return; }
+      const cycleDays = /^every (\d+) days$/.exec(cycleIn.value || '');
+      const note = { name, paysBy: paysIn.value || null, cycle: cycleIn.value || null, cycleDays: cycleDays ? +cycleDays[1] : null, status: statusIn.value || null, since, sinceText: sinceIn.value.trim(), sinceEnd: N.sinceEnd(sinceIn.value.trim()), note: textIn.value.trim() };
       if (!note.paysBy && !note.cycle && !note.status && !note.note && since == null) { delete state.notes[N.norm(name)]; commitNotes('Removed the note for “' + name + '”.'); return; }
       state.notes[N.norm(name)] = note;
       commitNotes('Saved the note for “' + name + '”' + (customers.length && !customers.some((c) => N.norm(c) === N.norm(name)) ? ' (no customer with that name in this file; check the spelling)' : '') + '.');
@@ -1302,6 +1310,14 @@
       el('label', null, 'Customer', nameIn), el('label', null, 'Pays by', paysIn), el('label', null, 'Cycle', cycleIn),
       el('label', null, 'Status', statusIn), el('label', null, 'Since', sinceIn), el('label', null, 'Note', textIn), saveBtn));
 
+    // How the last loaded file was read: anything interpreted or skipped, by line.
+    const rep = state.notesReport;
+    if (rep && (rep.interpreted.length || rep.ignored.length)) {
+      const box = el('div', { class: 'grp-card' }, el('strong', { text: 'How your file was read (' + rep.file + ')' }));
+      if (rep.interpreted.length) box.append(el('p', { class: 'mut', style: 'margin:6px 0 2px', text: 'Read as you clearly meant them (save the notes file to keep them this way):' }), el('ul', { class: 'grp-reasons' }, rep.interpreted.map((x) => el('li', { text: x }))));
+      if (rep.ignored.length) box.append(el('p', { class: 'neg', style: 'margin:6px 0 2px', text: 'Skipped (the rest of each row still counts):' }), el('ul', { class: 'grp-reasons' }, rep.ignored.map((x) => el('li', { text: x }))));
+      add.append(box);
+    }
     // Current notes
     const notes = Object.values(state.notes).sort((a, b) => a.name.localeCompare(b.name));
     list.append(el('h3', { text: 'Your notes (' + notes.length + ')' }));
@@ -1349,9 +1365,10 @@
       e.target.value = '';
       if (!f) return;
       try {
-        const { byKey, count } = N.fromCSV(await f.text(), P.parseCSV);
+        const { byKey, count, interpreted, ignored } = N.fromCSV(await f.text(), P.parseCSV);
         Object.assign(state.notes, byKey);
-        commitNotes('Loaded ' + plural(count, 'note') + ' from ' + f.name + '.');
+        state.notesReport = { file: f.name, count, interpreted, ignored };
+        commitNotes('Loaded ' + plural(count, 'note') + ' from ' + f.name + '.' + (interpreted.length ? ' ' + plural(interpreted.length, 'value') + ' read as you meant them' : '') + (ignored.length ? (interpreted.length ? ',' : '') + ' ' + plural(ignored.length, 'value') + ' skipped' : '') + (interpreted.length || ignored.length ? ': see “How your file was read”.' : ''));
       } catch (err) { $('noteNote').textContent = err.message; }
     });
     $('noteClear').addEventListener('click', () => {

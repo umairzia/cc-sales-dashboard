@@ -58,23 +58,91 @@ CYCLES = {"weekly": "weekly", "week": "weekly", "monthly": "monthly", "month": "
 STATUSES = {"active": None, "stopped ordering": "stopped ordering", "stopped": "stopped ordering", "closed": "closed", "shut down": "closed", "lost": "stopped ordering"}
 
 
+UNKNOWN_WORDS = {"unknown", "not sure", "dont know", "don t know", "n a", "na", "tbc", "tbd"}
+SEMI_ACTIVE = {"semi active", "semiactive", "partly active", "part active", "semi"}
+CYCLE_DAYS = {"weekly": 7.0, "monthly": 365.25 / 12}
+
+
+def osa(a: str, b: str) -> int:
+    """Edit distance with adjacent transpositions (typos such as "Cheuqe")."""
+    d = [[i] + [0] * len(b) for i in range(len(a) + 1)]
+    for j in range(len(b) + 1):
+        d[0][j] = j
+    for i in range(1, len(a) + 1):
+        for j in range(1, len(b) + 1):
+            d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] != b[j - 1]))
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)
+    return d[len(a)][len(b)]
+
+
+def classify(raw: str, own: str):
+    """(field, value, days) for one notes cell, read as clearly meant, or None."""
+    tables = {"pays": PAYS, "cycle": CYCLES, "status": STATUSES}
+    v = NORM(raw)
+    if not v or v in UNKNOWN_WORDS or v == "?":
+        return None
+    if v in SEMI_ACTIVE:
+        return ("status", "active", None)
+    order = [own] + [f for f in tables if f != own]
+    for f in order:
+        if v in tables[f]:
+            return (f, tables[f][v] or ("card" if f == "pays" else "active"), None)
+    if v in ("fortnightly", "biweekly", "bi weekly", "every two weeks", "every 2 weeks"):
+        return ("cycle", "every 14 days", 14)
+    m = re.search(r"(\d{1,3})\s*(?:-\s*)?days?\b", v) or re.search(r"\bnet\s*(\d{1,3})\b", v)
+    if m and 1 <= int(m.group(1)) <= 366:
+        n = int(m.group(1))
+        return ("cycle", "weekly" if n == 7 else "monthly" if 28 <= n <= 31 else f"every {n} days", n)
+    for f in order:
+        for k, val in tables[f].items():
+            if len(k) >= 6 and osa(v, k) <= (2 if len(k) >= 8 else 1):
+                return (f, val or ("card" if f == "pays" else "active"), None)
+    return None
+
+
 def load_notes(path: str | None) -> dict[str, dict]:
-    """Customer-notes file (read independently): normalised name → {pays, cycle, status}."""
+    """Customer-notes file (read independently): normalised name → {pays, cycle, days, status, since_end}.
+    Read as clearly meant: a value in another column (\"sporadic\" under Status), a
+    typo (\"Cheuqe\"), \"semi-active\", \"unknown\" or \"on 21 days\"; unreadable cells skipped."""
     if not path:
         return {}
     g = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
     cols = {re.sub(r"[^a-z0-9]+", " ", c.lower()).strip(): c for c in g.columns}
     col = lambda *names: next((cols[n] for n in names if n in cols), None)
-    ci, pi, yi, si = col("customer", "customer number", "name"), col("pays by", "payment method"), col("cycle", "terms"), col("status")
+    ci = col("customer", "customer number", "customer name", "name")
+    own = {"pays": col("pays by", "payment method", "pays"), "cycle": col("cycle", "rhythm", "terms"), "status": col("status")}
+    si, ni = col("since"), col("note", "notes", "comment")
     out = {}
     for _, r in g.iterrows():
         name = NORM(r[ci])
         if not name:
             continue
-        n = {"pays": PAYS[NORM(r[pi])] if pi and NORM(r[pi]) else None,
-             "cycle": CYCLES[NORM(r[yi])] if yi and NORM(r[yi]) else None,
-             "status": STATUSES[NORM(r[si])] if si and NORM(r[si]) else None}
-        if any(n.values()) or (col("note", "notes") and str(r[col("note", "notes")]).strip()) or (col("since") and str(r[col("since")]).strip()):
+        n = {"pays": None, "cycle": None, "days": None, "status": None, "since_end": None}
+        cells = [(f, str(r[c]) if c else "") for f, c in own.items()]
+        got = [(f, classify(raw, f)) for f, raw in cells]
+        got.sort(key=lambda x: 0 if x[1] and x[1][0] == x[0] else 1)   # each column's own value first
+        filled = set()
+        for f, c in got:
+            if not c or c[0] in filled:
+                continue
+            filled.add(c[0])
+            n[c[0]] = c[1]
+            if c[2]:
+                n["days"] = c[2]
+        if n["pays"] == "card":
+            n["pays"] = None
+        if n["status"] == "active":
+            n["status"] = None
+        since = str(r[si]).strip() if si else ""
+        m = re.fullmatch(r"(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?", since)
+        if m:
+            y = int(m.group(1))
+            end = (pd.Timestamp(y, int(m.group(2)), int(m.group(3))) if m.group(3) else
+                   pd.Timestamp(y, int(m.group(2)), 1) + pd.offsets.MonthEnd(0) if m.group(2) else pd.Timestamp(y, 12, 31))
+            n["since_end"] = end.normalize()
+        note_text = str(r[ni]).strip() if ni else ""
+        if n["pays"] or n["cycle"] or n["status"] or note_text or n["since_end"] is not None:
             out[name] = n
     return out
 
@@ -300,13 +368,17 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None, notes_pa
     lost = {c for c in pay_days if note(c).get("status")}
     seasonal = {c for c in pay_days if note(c).get("cycle") == "seasonal"}
     no_rhythm = {c for c in pay_days if note(c).get("cycle") in ("sporadic", "on request") or note(c).get("pays") == "mixed"}
-    monthly = {c for c in pay_days if note(c).get("cycle") == "monthly"}
-    stop_days = lambda c: max(STOP, round(3 * MONTH)) if c in monthly else STOP
+    declared = lambda c: CYCLE_DAYS.get(note(c).get("cycle")) or note(c).get("days")
+    long_cycle = {c for c in pay_days if declared(c) and declared(c) >= 14}
+    stop_days = lambda c: max(STOP, round(3 * declared(c))) if declared(c) else STOP
     stopped = {c for c, d in pay_days.items() if c not in lost and c not in seasonal
                and (note(c).get("pays") in ("EFT", "cheque") or silent[c] >= stop_days(c))}
     iso = lambda d: d.strftime("%Y-%m-%d")
     eq("notes applied", sum(1 for c in pay_days if NORM(c) in notes), dash["notes"]["applied"])
     eq("lost customers (name, status)", sorted((c, note(c)["status"]) for c in lost), sorted((x["name"], x["status"]) for x in dash["lost"]))
+    eq("lost customers paid by card after their Since date",
+       sorted(c for c in lost if note(c)["since_end"] is not None and pay_days[c][-1] > note(c)["since_end"]),
+       sorted(x["name"] for x in dash["lost"] if x.get("paidAfter")))
     eq("seasonal customers off season", sorted(c for c in seasonal if silent[c] >= STOP), sorted(dash["seasonalOff"]))
     eq("stopped paying by card (name, as of, from notes)", sorted((c, iso(pay_days[c][-1]), note(c).get("pays") in ("EFT", "cheque")) for c in stopped),
        sorted((x["name"], x["lastDay"], x["declared"]) for x in dash["stopped"]))
@@ -326,9 +398,8 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None, notes_pa
         if c in stopped or c in lost or c in seasonal or c in no_rhythm:
             continue
         gaps = [observed(a, b) for a, b in zip(d, d[1:]) if observed(a, b) < STOP]
-        cyc = note(c).get("cycle")
-        if cyc in ("weekly", "monthly"):
-            cad[c] = 7.0 if cyc == "weekly" else MONTH
+        if declared(c):
+            cad[c] = float(declared(c))
         elif len(gaps) >= 2:
             cad[c] = float(np.mean(gaps))
     eq("payment cadence customers", sorted(cad), sorted(dash["cadence"]))
@@ -342,7 +413,7 @@ def main(csv_path: str, json_path: str, groups_path: str | None = None, notes_pa
     # off card. Stopped, lost, seasonal and no-rhythm customers have no trend,
     # and monthly payers are only compared when periods are months. Short
     # exports need 3 periods with 2 active, the rest 4 with 3 active.
-    untracked = stopped | lost | seasonal | no_rhythm | (monthly if tf in ("short", "medium") else set())
+    untracked = stopped | lost | seasonal | no_rhythm | (long_cycle if tf in ("short", "medium") else set())
     need, need_active = (3, 2) if tf == "short" else (4, 3)
     t0 = max(0, len(bounds) - 12) if tf == "multi" else 0
     first_day = named.groupby("cust").day.min()
