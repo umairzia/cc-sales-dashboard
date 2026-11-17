@@ -5,19 +5,43 @@ runs in a desktop browser; the data never leaves the computer.
 
 ## What lives where
 
-Keep these together in one folder (a shared drive is fine, but the CSVs contain
-customer names and payments, so not a public one):
+One shared folder (not a public one: the CSVs contain customer names and
+payments), with a sub-folder per file and a numbered folder per version:
+
+```
+Card-Sales-Dashboard/
+├── README.txt                  ← which versions are live, and what changed in each
+├── dashboard/
+│   └── v3/dashboard_v3.html
+├── customer-groups/
+│   ├── v1/  v2/                ← kept for the record, not used
+│   └── v3_FINAL/customer-groups_v3.csv
+├── customer-notes/
+│   ├── v1/  v2/                ← kept for the record, not used
+│   └── v3_FINAL/customer-notes_v3.csv
+├── exports/                    ← every card-processor export, named by its dates, never edited
+│   ├── 2025-01-06_to_2025-11-28.csv
+│   └── …
+├── docs/runbook.md
+└── reviews/                    ← review workbooks, named by date
+```
 
 | File | What it is | Who changes it |
 |---|---|---|
-| `dashboard.html` | the dashboard, one file | replaced when a new build is released |
-| `exports/` | every card-processor export, one CSV per stretch of up to 90 days, never edited | you, one new file each week |
-| `customer-groups.csv` | export names that are one customer on several cards | you, through **Customer groups** → *Save groups file* |
-| `customer-notes.csv` | what the export can't show: who pays by EFT or cheque, who pays monthly or seasonally, who stopped ordering | you, in Excel or through **Customer notes** → *Save notes file* |
+| `dashboard_vN.html` | the dashboard, one file | replaced when a new build is released |
+| `exports/*.csv` | card-processor exports, up to 90 days each | you, one new file each week |
+| `customer-groups_vN.csv` | export names that are one customer on several cards | you, through **Customer groups** → *Save groups file* |
+| `customer-notes_vN.csv` | what the export can't show: who pays by EFT or cheque, who pays monthly or seasonally, who stopped ordering | you, in Excel or through **Customer notes** → *Save notes file* |
+
+**Versions.** Exactly one folder per file ends in `_FINAL`: that is the one to
+load. To change groups or notes: save the new file as the next version in a new
+folder (`v4_FINAL/customer-notes_v4.csv`), rename the old folder from
+`v3_FINAL` to `v3`, and add one line to `README.txt` saying what changed. Never
+edit an old version in place.
 
 The browser remembers the groups and notes you loaded, so on the same computer
 you only load the CSVs once and again after you change them. On a new computer
-(or after clearing browser data) load both files again.
+(or after clearing browser data) load the `_FINAL` versions again.
 
 ## Building the history (once)
 
@@ -41,10 +65,12 @@ files. The dashboard combines them:
 2. **Open** `dashboard.html` in Chrome or Edge (double-click it), select **all
    the files in `exports/`** and drop them onto the page together (or click the
    page and pick them all). Already open? **Add files…** adds the new one.
+   The first time on a computer, also load `customer-groups/…_FINAL` and
+   `customer-notes/…_FINAL` (see step 3).
    Check the blue "files combined" notice and that there is no gap warning.
-3. If the top-right buttons don't show a count badge, **load**
-   `customer-groups.csv` (Customer groups → *Load groups file…*) and
-   `customer-notes.csv` (Customer notes → *Load notes file…*).
+3. If the top-right buttons don't show a count badge, **load** the `_FINAL`
+   groups file (Customer groups → *Load groups file…*) and the `_FINAL` notes
+   file (Customer notes → *Load notes file…*).
 4. Read the four lists under **Momentum and slowdown** and **Customers**:
 
    | List | Means | Do |
